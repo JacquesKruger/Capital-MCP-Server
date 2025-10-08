@@ -6,6 +6,8 @@ A production-ready [Model Context Protocol](https://modelcontextprotocol.io) (MC
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
 
+> **⚡ New to this?** Check out the [5-Minute Quick Start Guide](QUICKSTART.md) →
+
 ---
 
 ## ⚠️ Important Disclaimer
@@ -48,94 +50,101 @@ A production-ready [Model Context Protocol](https://modelcontextprotocol.io) (MC
 
 ## 🚀 Quick Start
 
-### Prerequisites
+### One-Line Installation
+
+```bash
+git clone https://github.com/JacquesKruger/Capital-MCP-Server.git && cd Capital-MCP-Server && ./install.sh
+```
+
+That's it! The installer will:
+- ✅ Detect Docker or Python automatically
+- ✅ Install all dependencies
+- ✅ Create credentials template
+- ✅ Test the server
+- ✅ Show you exactly how to configure your MCP client
+
+### Manual Installation (if you prefer)
+
+<details>
+<summary>Click to expand manual installation steps</summary>
+
+#### Prerequisites
 
 - **Capital.com Account** - Get API credentials from [Capital.com Developer Portal](https://capital.com)
 - **Docker** (recommended) or Python 3.11+
 - **MCP-compatible client** - Claude Desktop, Cursor, or similar
 
-### Installation
-
-#### Option 1: Docker (Recommended)
+#### Option 1: Docker
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/Capital-MCP-Server.git
+# Clone and build
+git clone https://github.com/JacquesKruger/Capital-MCP-Server.git
 cd Capital-MCP-Server
-
-# Build the Docker image
 docker build -t capital-mcp-server .
 
-# Create credentials file
+# Add credentials
 cp .env.example secrets/.env.demo
 nano secrets/.env.demo  # Add your Capital.com credentials
-
-# Test the server
-echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}},"id":1}' | \
-  docker run --rm -i --env-file secrets/.env.demo capital-mcp-server
 ```
 
-#### Option 2: Local Python
+#### Option 2: Python
 
 ```bash
-# Create virtual environment
+# Clone and setup
+git clone https://github.com/JacquesKruger/Capital-MCP-Server.git
+cd Capital-MCP-Server
 python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
+source venv/bin/activate
 pip install -r requirements.txt
 
-# Set environment variables
-export CAP_ENVIRONMENT=demo
-export CAP_API_KEY=your_demo_api_key
-export CAP_IDENTIFIER=your_demo_identifier
-export CAP_PASSWORD=your_demo_password
-
-# Run the server
-python capital_server.py
+# Add credentials to secrets/.env.demo
+cp .env.example secrets/.env.demo
+nano secrets/.env.demo
 ```
+
+</details>
 
 ---
 
 ## 🔧 Configuration
 
+> **💡 Tip:** The `install.sh` script shows you the exact configuration for your system!
+
+### Quick Config
+
+**After running `./install.sh`**, the installer will display your exact configuration. Just copy-paste it into your MCP client config file and restart.
+
+<details>
+<summary>📖 Click for detailed configuration instructions</summary>
+
 ### For Claude Desktop
 
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Edit: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "capital-trading": {
       "command": "docker",
-      "args": [
-        "run",
-        "--rm",
-        "-i",
-        "--env-file",
-        "/absolute/path/to/secrets/.env.demo",
-        "capital-mcp-server"
-      ]
+      "args": ["run", "--rm", "-i", "--env-file", "/absolute/path/to/secrets/.env.demo", "capital-mcp-server"]
     }
   }
 }
 ```
 
+**Replace `/absolute/path/to/` with your actual path!**
+
 ### For Cursor
 
-Edit `~/.cursor/mcp.json`:
+Edit: `~/.cursor/mcp.json`
 
 ```json
 {
   "mcpServers": {
     "capital-trading": {
       "command": "/bin/bash",
-      "args": [
-        "/absolute/path/to/Capital-MCP-Server/run-mcp-server.sh"
-      ],
-      "env": {
-        "CAP_ENVIRONMENT": "demo"
-      }
+      "args": ["/absolute/path/to/Capital-MCP-Server/run-mcp-server.sh"],
+      "env": {"CAP_ENVIRONMENT": "demo"}
     }
   }
 }
@@ -143,7 +152,9 @@ Edit `~/.cursor/mcp.json`:
 
 ### For Docker Desktop MCP Toolkit
 
-The server is compatible with Docker Desktop's MCP Toolkit. See [DOCKER_DESKTOP_SETUP.md](DOCKER_DESKTOP_SETUP.md) for detailed instructions.
+See [DOCKER_DESKTOP_SETUP.md](DOCKER_DESKTOP_SETUP.md) for step-by-step instructions.
+
+</details>
 
 ---
 
