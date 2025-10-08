@@ -1,0 +1,13 @@
+{
+  "name": "capital-trading",
+  "displayName": "Capital.com Trading",
+  "description": "MCP server for Capital.com trading API - market data, account management, and trade execution",
+  "command": "/bin/bash",
+  "args": [
+    "/Users/jacqueskruger/Documents/Code Projects/Capital-MCP-Server/run-mcp-server.sh"
+  ],
+  "env": {}
+}
+
+
+

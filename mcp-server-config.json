@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "capital-trading": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--env-file",
+        "/Users/jacqueskruger/Documents/Code Projects/Capital-MCP-Server/secrets/.env.demo",
+        "capital-mcp-server"
+      ]
+    }
+  }
+}
+
+
+
