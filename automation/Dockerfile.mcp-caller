@@ -1,0 +1,29 @@
+# MCP Caller Helper - Python environment for MCP stdio JSON-RPC calls
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    postgresql-client \
+    docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python packages
+COPY requirements-automation.txt .
+RUN pip install --no-cache-dir -r requirements-automation.txt
+
+# Copy scripts and config
+COPY scripts/ /app/scripts/
+COPY config/ /app/config/
+
+# Create non-root user
+RUN useradd -m -u 1000 mcpcaller && \
+    chown -R mcpcaller:mcpcaller /app
+
+USER mcpcaller
+
+# Default command (kept alive for exec calls from n8n)
+CMD ["tail", "-f", "/dev/null"]
+

@@ -1,0 +1,276 @@
+{
+  "name": "Trade Management",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/5 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [300, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://mcp-caller:8000/mcp/get_positions"
+      },
+      "id": "get-open-positions",
+      "name": "Get Open Positions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [500, 300],
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  if (!data.success || !data.data || !data.data.positions) {\n    continue;\n  }\n  \n  const positions = data.data.positions;\n  \n  // Process each position\n  for (const pos of positions) {\n    results.push({\n      json: {\n        position_id: pos.position_id || pos.dealId,\n        symbol: pos.symbol || pos.epic,\n        side: pos.side || pos.direction,\n        size: parseFloat(pos.size || 0),\n        open_price: parseFloat(pos.open_price || pos.openLevel || 0),\n        current_price: parseFloat(pos.current_price || pos.level || 0),\n        pnl: parseFloat(pos.pnl || pos.profit || 0),\n        pnl_pct: pos.pnl_pct || 0,\n        stop_loss: parseFloat(pos.stop_loss || pos.stopLevel || 0),\n        take_profit: parseFloat(pos.take_profit || pos.limitLevel || 0),\n        opened_at: pos.opened_at || pos.createdDate,\n        timestamp: new Date().toISOString()\n      }\n    });\n  }\n}\n\nreturn results.length > 0 ? results : [{ json: { no_positions: true } }];"
+      },
+      "id": "parse-positions",
+      "name": "Parse Positions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.no_positions }}",
+              "operation": "notEqual",
+              "value2": "true"
+            }
+          ]
+        }
+      },
+      "id": "has-positions",
+      "name": "Has Positions?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const pos = item.json;\n  \n  const reasons = [];\n  let should_close = false;\n  let close_reason = null;\n  \n  // Calculate position age\n  const age_hours = pos.opened_at ? \n    (new Date() - new Date(pos.opened_at)) / (1000 * 60 * 60) : 0;\n  \n  // 1. Stop-Loss Check\n  if (pos.stop_loss && pos.stop_loss > 0) {\n    const hit_stop = (pos.side === 'BUY' && pos.current_price <= pos.stop_loss) ||\n                     (pos.side === 'SELL' && pos.current_price >= pos.stop_loss);\n    if (hit_stop) {\n      should_close = true;\n      close_reason = 'STOP_LOSS_HIT';\n      reasons.push('stop-loss triggered');\n    }\n  }\n  \n  // 2. Take-Profit Check\n  if (!should_close && pos.take_profit && pos.take_profit > 0) {\n    const hit_target = (pos.side === 'BUY' && pos.current_price >= pos.take_profit) ||\n                       (pos.side === 'SELL' && pos.current_price <= pos.take_profit);\n    if (hit_target) {\n      should_close = true;\n      close_reason = 'TAKE_PROFIT_HIT';\n      reasons.push('take-profit reached');\n    }\n  }\n  \n  // 3. Maximum Hold Time (24 hours for intraday)\n  if (!should_close && age_hours > 24) {\n    should_close = true;\n    close_reason = 'MAX_HOLD_TIME';\n    reasons.push('position held > 24 hours');\n  }\n  \n  // 4. Trailing Stop (Simple implementation: lock in 50% of profit if up 2R)\n  if (!should_close && pos.pnl_pct) {\n    const pnl_pct_abs = Math.abs(parseFloat(pos.pnl_pct));\n    if (pos.pnl < 0 && pnl_pct_abs > 3) {\n      // Loss > 3% (should have hit stop, but as fallback)\n      should_close = true;\n      close_reason = 'LOSS_LIMIT';\n      reasons.push('loss exceeds 3%');\n    }\n  }\n  \n  results.push({\n    json: {\n      ...pos,\n      should_close,\n      close_reason,\n      close_reasons: reasons.join(', '),\n      age_hours: Math.round(age_hours * 10) / 10,\n      evaluated_at: new Date().toISOString()\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "evaluate-positions",
+      "name": "Evaluate Positions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 240]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.should_close }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "should-close",
+      "name": "Should Close?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1300, 240]
+    },
+    {
+      "parameters": {
+        "url": "http://mcp-caller:8000/mcp/cancel_order",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ deal_id: $json.position_id }) }}"
+      },
+      "id": "close-position",
+      "name": "Close Position",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1500, 180]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO system_events (event_type, severity, message, details, source) VALUES ('POSITION_CLOSED', 'INFO', 'Position closed: ' || '{{ $json.symbol }}' || ' ' || '{{ $json.close_reason }}', '{{ $json.symbol }},{{ $json.side }},{{ $json.pnl }},{{ $json.close_reason }}', 'trade_management_workflow')"
+      },
+      "id": "log-close",
+      "name": "Log Position Close",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1700, 180],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $env.TELEGRAM_CHAT_ID, text: '🔴 POSITION CLOSED\\n\\nSymbol: ' + $json.symbol + '\\nReason: ' + $json.close_reason + '\\nP&L: $' + $json.pnl.toFixed(2) + '\\n\\n' + $json.close_reasons }) }}"
+      },
+      "id": "notify-close",
+      "name": "Notify Close",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1900, 180]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO system_events (event_type, severity, message, details, source) VALUES ('POSITION_MONITORING', 'INFO', 'Position monitoring completed', 'monitoring_cycle', 'trade_management_workflow')"
+      },
+      "id": "log-completion",
+      "name": "Log Completion",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1100, 480],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "cron-trigger": {
+      "main": [
+        [
+          {
+            "node": "get-open-positions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-open-positions": {
+      "main": [
+        [
+          {
+            "node": "parse-positions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-positions": {
+      "main": [
+        [
+          {
+            "node": "has-positions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "has-positions": {
+      "main": [
+        [
+          {
+            "node": "evaluate-positions",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "log-completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "evaluate-positions": {
+      "main": [
+        [
+          {
+            "node": "should-close",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "should-close": {
+      "main": [
+        [
+          {
+            "node": "close-position",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "log-completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "close-position": {
+      "main": [
+        [
+          {
+            "node": "log-close",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "log-close": {
+      "main": [
+        [
+          {
+            "node": "notify-close",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "notify-close": {
+      "main": [
+        [
+          {
+            "node": "log-completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-10-09T00:00:00.000Z",
+  "versionId": "1"
+}
+

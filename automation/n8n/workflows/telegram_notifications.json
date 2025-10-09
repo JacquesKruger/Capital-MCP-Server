@@ -1,0 +1,211 @@
+{
+  "name": "Telegram Notifications",
+  "nodes": [
+    {
+      "id": "Cron Trigger",
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [100, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "*/1 * * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "Get Pending Intents",
+      "name": "Get Pending Intents",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [300, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM intents WHERE status = 'PENDING' AND notified_at IS NULL AND created_at > NOW() - INTERVAL '10 minutes' ORDER BY created_at DESC LIMIT 1"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "id": "Prepare Notification",
+      "name": "Prepare Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300],
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = [];\nfor (const item of items) {\n  const data = item.json;\n  if (data.id && data.symbol && data.side) {\n    // Format position sizing info\n    const positionUSD = data.position_size_usd ? parseFloat(data.position_size_usd) : 0;\n    const positionUnits = data.position_size_units ? parseFloat(data.position_size_units) : 0;\n    const riskUSD = data.risk_amount_usd ? parseFloat(data.risk_amount_usd) : 0;\n    const stopPrice = data.stop_loss_price ? parseFloat(data.stop_loss_price) : 0;\n    const targetPrice = data.take_profit_price ? parseFloat(data.take_profit_price) : 0;\n    const entryPrice = data.price ? parseFloat(data.price) : 0;\n    \n    // Calculate USD amounts for stop-loss and take-profit\n    let stopLossUSD = 0;\n    let takeProfitUSD = 0;\n    \n    if (entryPrice > 0 && positionUnits > 0 && stopPrice > 0 && targetPrice > 0) {\n      if (data.side === 'BUY') {\n        // For BUY: Loss when price goes down, profit when price goes up\n        stopLossUSD = (entryPrice - stopPrice) * positionUnits;\n        takeProfitUSD = (targetPrice - entryPrice) * positionUnits;\n      } else if (data.side === 'SELL') {\n        // For SELL: Loss when price goes up, profit when price goes down\n        stopLossUSD = (stopPrice - entryPrice) * positionUnits;\n        takeProfitUSD = (entryPrice - targetPrice) * positionUnits;\n      }\n    }\n    \n    // Ensure we have valid numbers (not NaN)\n    stopLossUSD = isNaN(stopLossUSD) ? 0 : Math.abs(stopLossUSD);\n    takeProfitUSD = isNaN(takeProfitUSD) ? 0 : Math.abs(takeProfitUSD);\n    \n    // Format USD amounts or show 'N/A' if calculation failed\n    const stopLossText = stopLossUSD > 0 ? ` (-$${stopLossUSD.toFixed(2)})` : '';\n    const takeProfitText = takeProfitUSD > 0 ? ` (+$${takeProfitUSD.toFixed(2)})` : '';\n    \n    const message = `🚨 TRADING INTENT PENDING\\n\\n` +\n      `📊 SIGNAL\\n` +\n      `Symbol: ${data.symbol}\\n` +\n      `Side: ${data.side}\\n` +\n      `Strategy: ${data.strategy}\\n\\n` +\n      `💰 POSITION SIZING\\n` +\n      `Entry: ${entryPrice.toFixed(4)}\\n` +\n      `Position Size: $${positionUSD.toFixed(2)} (${positionUnits.toFixed(4)} units)\\n` +\n      `Risk Amount: $${riskUSD.toFixed(2)}\\n` +\n      `Stop Loss: ${stopPrice.toFixed(4)}${stopLossText}\\n` +\n      `Take Profit: ${targetPrice.toFixed(4)}${takeProfitText}\\n\\n` +\n      `📝 Rationale: ${data.rationale}\\n\\n` +\n      `⏰ Created: ${new Date(data.created_at).toLocaleString()}\\n\\n` +\n      `Click to approve or reject this trade.`;\n    results.push({\n      json: {\n        intent_id: data.id,\n        symbol: data.symbol,\n        side: data.side,\n        strategy: data.strategy,\n        position_size_usd: data.position_size_usd,\n        position_size_units: data.position_size_units,\n        stop_loss_price: data.stop_loss_price,\n        take_profit_price: data.take_profit_price,\n        risk_amount_usd: data.risk_amount_usd,\n        message,\n        timestamp: new Date().toISOString()\n      }\n    });\n  }\n}\nreturn results;"
+      }
+    },
+    {
+      "id": "Send Telegram Message",
+      "name": "Send Telegram Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [700, 300],
+      "parameters": {
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { chat_id: $env.TELEGRAM_CHAT_ID, text: $json.message, reply_markup: { inline_keyboard: [[ { text: '✅ Approve', callback_data: 'APPROVE:' + $json.intent_id }, { text: '❌ Reject', callback_data: 'REJECT:' + $json.intent_id } ]] } } }}"
+      }
+    },
+    {
+      "id": "Merge Response",
+      "name": "Merge Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300],
+      "parameters": {
+        "jsCode": "const responses = $input.all();\nconst originals = $('Prepare Notification').all();\nconst results = [];\nfor (let i = 0; i < responses.length; i++) {\n  const original = originals[i]?.json || {};\n  const telegramResponse = responses[i]?.json ?? null;\n  const details = {\n    intent_id: original.intent_id ?? null,\n    symbol: original.symbol ?? null,\n    side: original.side ?? null,\n    strategy: original.strategy ?? null,\n    message_id: telegramResponse?.result?.message_id ?? null\n  };\n  const logDetails = JSON.stringify(details).replace(/'/g, \"''\");\n  results.push({\n    json: {\n      ...original,\n      telegram_response: telegramResponse,\n      log_details: logDetails,\n      timestamp: new Date().toISOString()\n    }\n  });\n}\nreturn results;"
+      }
+    },
+    {
+      "id": "Update Notified At",
+      "name": "Update Notified At",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [900, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE intents SET notified_at = NOW() WHERE id = '{{ $json.intent_id }}'"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "id": "Log Notification",
+      "name": "Log Notification",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1100, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO system_events (id, event_type, severity, message, details, source) VALUES (nextval('system_events_id_seq'),'TELEGRAM_NOTIFICATION','INFO','Telegram notification sent','{{$json.log_details}}','n8n_telegram_notifications_workflow')"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "id": "Finalize Output",
+      "name": "Finalize Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 300],
+      "parameters": {
+        "jsCode": "return $items('Merge Response');"
+      }
+    }
+  ],
+  "connections": {
+    "Cron Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Pending Intents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Pending Intents": {
+      "main": [
+        [
+          {
+            "node": "Prepare Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Notification": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram Message": {
+      "main": [
+        [
+          {
+            "node": "Merge Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Response": {
+      "main": [
+        [
+          {
+            "node": "Update Notified At",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Notified At": {
+      "main": [
+        [
+          {
+            "node": "Log Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Notification": {
+      "main": [
+        [
+          {
+            "node": "Finalize Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-08T12:00:00.000Z",
+  "versionId": "1"
+}

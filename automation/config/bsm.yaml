@@ -1,0 +1,96 @@
+# BSM (Black-Scholes-Merton) Analysis Configuration
+# Options analysis for context features (analysis-only mode)
+
+# Enable/disable BSM analysis
+enabled: false  # Set to true to enable BSM analysis
+mode: analysis_only  # analysis_only | options_trading (future)
+
+# Risk-free rate for BSM calculations
+risk_free_rate: 0.04  # 4% annual risk-free rate
+
+# IV (Implied Volatility) analysis settings
+iv_rank_lookback_days: 252  # Trading days for IV rank calculation
+mispricing_threshold: 0.1   # 10% mispricing threshold for signals
+min_vega: 0.02             # Minimum vega for significance
+
+# Volatility proxy settings (when no options data available)
+proxy_vol_bias: 1.10       # Bias factor for realized vol proxy
+
+# BSM calculation settings
+max_iter: 100              # Maximum iterations for IV calculation
+tol: 1e-6                  # Tolerance for convergence
+
+# Options data source (future extension)
+options_data:
+  enabled: false
+  source: ""               # Data provider (e.g., "alpha_vantage", "quandl")
+  api_key_env: ""          # Environment variable for API key
+
+# BSM signal generation
+signals:
+  # IV-based signals
+  high_iv_threshold: 0.3   # 30% IV = high
+  low_iv_threshold: 0.15  # 15% IV = low
+  
+  # Mispricing signals
+  significant_mispricing: 0.1  # 10% mispricing = significant
+  
+  # Vega-based filtering
+  min_vega_for_signals: 0.05  # Minimum vega for signal generation
+
+# Context features for bandit learning
+context_features:
+  # IV features
+  iv_level: true           # Current IV level
+  iv_rank: true           # IV percentile rank
+  iv_regime: true          # High/normal/low IV regime
+  
+  # Greeks features
+  vega: true              # Option vega
+  delta: true              # Option delta
+  gamma: true              # Option gamma
+  theta: true              # Option theta
+  
+  # Mispricing features
+  mispricing: true         # Market vs theoretical price
+  mispricing_score: true   # Weighted mispricing score
+  
+  # Volatility features
+  realized_vol: true      # Historical realized volatility
+  vol_bias: true          # Volatility bias factor
+  vol_regime: true         # Volatility regime classification
+
+# Performance tracking
+performance:
+  track_iv_accuracy: true   # Track IV prediction accuracy
+  track_mispricing: true    # Track mispricing detection
+  track_greeks: true        # Track Greeks accuracy
+  
+  # Reporting
+  daily_report: true        # Include BSM metrics in daily report
+  weekly_analysis: true     # Weekly BSM performance analysis
+
+# Safety settings
+safety:
+  # Maximum IV for calculations
+  max_iv: 5.0              # 500% max IV
+  
+  # Minimum time to expiration
+  min_time_to_expiry: 0.01  # 1 day minimum
+  
+  # Maximum mispricing to consider
+  max_mispricing: 2.0       # 200% max mispricing
+  
+  # Data quality checks
+  require_volume: true      # Require volume data for calculations
+  min_data_points: 20       # Minimum data points for analysis
+
+# Debugging and logging
+debug:
+  log_calculations: false   # Log detailed BSM calculations
+  log_iv_iterations: false  # Log IV calculation iterations
+  log_errors: true          # Log BSM calculation errors
+  
+  # Performance monitoring
+  track_calculation_time: true  # Track calculation performance
+  max_calculation_time: 5.0     # 5 seconds max per calculation

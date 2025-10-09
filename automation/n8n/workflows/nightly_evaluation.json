@@ -1,0 +1,208 @@
+{
+  "name": "Nightly Evaluation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "0 23 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT strategy, COUNT(*) as trades, AVG(pnl) as avg_pnl, SUM(pnl) as total_pnl, MAX(pnl) as best_trade, MIN(pnl) as worst_trade FROM trades WHERE closed_at IS NOT NULL AND closed_at > NOW() - INTERVAL '7 days' GROUP BY strategy"
+      },
+      "id": "get-performance-data",
+      "name": "Get Performance Data",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [300, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM bandit_policy ORDER BY updated_at DESC LIMIT 1"
+      },
+      "id": "get-bandit-policy",
+      "name": "Get Bandit Policy",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [500, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate performance report\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  if (data.strategy) {\n    const report = {\n      strategy: data.strategy,\n      trades: parseInt(data.trades),\n      avg_pnl: parseFloat(data.avg_pnl || 0),\n      total_pnl: parseFloat(data.total_pnl || 0),\n      best_trade: parseFloat(data.best_trade || 0),\n      worst_trade: parseFloat(data.worst_trade || 0),\n      win_rate: data.trades > 0 ? (data.avg_pnl > 0 ? 1.0 : 0.0) : 0.0,\n      timestamp: new Date().toISOString()\n    };\n    \n    results.push({\n      json: report\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "generate-performance-report",
+      "name": "Generate Performance Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list"
+        },
+        "table": {
+          "__rl": true,
+          "value": "performance",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "day": "={{ new Date().toISOString().split('T')[0] }}",
+            "strategy": "={{ $json.strategy }}",
+            "action": "={{ $json.strategy }}",
+            "trades_count": "={{ $json.trades }}",
+            "total_pnl": "={{ $json.total_pnl }}",
+            "avg_r_multiple": "={{ $json.avg_pnl }}",
+            "metrics_json": "={{ JSON.stringify($json) }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "store-performance",
+      "name": "Store Performance",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [900, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list"
+        },
+        "table": {
+          "__rl": true,
+          "value": "system_events",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "event_type": "NIGHTLY_EVALUATION",
+            "severity": "INFO",
+            "message": "Nightly evaluation completed",
+            "details": "={{ JSON.stringify({strategies_evaluated: $json.strategy, performance_stored: true}) }}",
+            "source": "n8n_nightly_evaluation_workflow"
+          }
+        },
+        "options": {}
+      },
+      "id": "log-evaluation",
+      "name": "Log Evaluation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1100, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "cron-trigger": {
+      "main": [
+        [
+          {
+            "node": "get-performance-data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-performance-data": {
+      "main": [
+        [
+          {
+            "node": "get-bandit-policy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-bandit-policy": {
+      "main": [
+        [
+          {
+            "node": "generate-performance-report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "generate-performance-report": {
+      "main": [
+        [
+          {
+            "node": "store-performance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "store-performance": {
+      "main": [
+        [
+          {
+            "node": "log-evaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-08T12:00:00.000Z",
+  "versionId": "1"
+}

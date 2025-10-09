@@ -1,0 +1,166 @@
+# Contextual Bandit Configuration
+# Multi-armed bandit learning for strategy selection
+
+# Enable/disable bandit learning
+enabled: true
+
+# Algorithm selection
+algorithm: linucb  # linucb | logistic
+
+# Exploration settings
+epsilon:
+  base: 0.08              # Base exploration rate (8%)
+  high_iv: 0.15          # Higher exploration in high IV environments
+  low_iv: 0.05           # Lower exploration in low IV environments
+  volatile_market: 0.12   # Higher exploration in volatile markets
+  stable_market: 0.06    # Lower exploration in stable markets
+
+# Regime-based exploration multipliers
+regimes:
+  pre_open: 1.2          # 20% more exploration pre-market
+  lunch: 0.8             # 20% less exploration during lunch
+  close: 1.1              # 10% more exploration near close
+  overnight: 0.5          # 50% less exploration overnight
+
+# Learning parameters
+learning:
+  # LinUCB parameters
+  alpha: 1.0              # Confidence parameter for LinUCB
+  regularization: 0.01    # L2 regularization
+  
+  # Logistic bandit parameters
+  learning_rate: 0.01     # Gradient descent learning rate
+  momentum: 0.9           # Momentum for gradient updates
+  
+  # Reward smoothing
+  reward_smoothing_alpha: 0.2  # Exponential smoothing factor
+  skip_penalty: 0.05      # Penalty for skipping trades
+
+# Action space definition
+actions:
+  # Strategy types
+  strategies:
+    - ORB      # Opening Range Breakout
+    - SMA      # SMA/RSI/ATR
+    - DON      # Donchian Breakout
+  
+  # Stop loss styles
+  stop_styles:
+    - tight    # Tight stops (1x ATR)
+    - base     # Base stops (2x ATR)
+    - wide     # Wide stops (3x ATR)
+  
+  # Size multipliers
+  size_multipliers:
+    - 0.5      # Conservative sizing
+    - 1.0      # Base sizing
+    - 1.5      # Aggressive sizing
+  
+  # Special actions
+  special:
+    - SKIP     # Skip trading
+
+# Context features
+context_features:
+  # Technical analysis features
+  ta_features:
+    sma_20: true
+    sma_50: true
+    rsi: true
+    atr: true
+    vwap: true
+    volume_ratio: true
+  
+  # BSM features
+  bsm_features:
+    iv_level: true
+    iv_rank: true
+    vega: true
+    mispricing: true
+  
+  # Regime features
+  regime_features:
+    time_of_day: true
+    day_of_week: true
+    volatility_regime: true
+    trend_regime: true
+  
+  # Risk features
+  risk_features:
+    current_exposure: true
+    recent_drawdown: true
+    position_count: true
+    daily_pnl: true
+  
+  # Signal features
+  signal_features:
+    signal_strength: true
+    signal_confidence: true
+    signal_type: true
+
+# Reward function
+reward:
+  # R-multiple calculation
+  use_r_multiple: true    # Use R-multiple as primary reward
+  r_multiple_cap: 5.0     # Cap R-multiple at 5x
+  
+  # Additional reward factors
+  factors:
+    slippage_penalty: 0.1    # 10% penalty for slippage
+    overnight_penalty: 0.05  # 5% penalty for overnight holds
+    drawdown_penalty: 0.2    # 20% penalty for drawdowns
+    
+  # Reward smoothing
+  smoothing:
+    window_size: 20        # 20-trade rolling window
+    min_trades: 5          # Minimum trades for valid reward
+
+# Performance tracking
+performance:
+  # Metrics to track
+  metrics:
+    - win_rate
+    - avg_r_multiple
+    - max_drawdown
+    - sharpe_ratio
+    - calmar_ratio
+  
+  # Reporting
+  daily_report: true       # Include bandit metrics in daily report
+  weekly_analysis: true    # Weekly bandit performance analysis
+  
+  # Policy updates
+  update_frequency: 100    # Update policy every 100 trades
+  min_observations: 10     # Minimum observations per arm
+
+# Safety settings
+safety:
+  # Maximum exploration rate
+  max_epsilon: 0.3         # Never explore more than 30%
+  
+  # Minimum confidence for action selection
+  min_confidence: 0.1      # Minimum 10% confidence
+  
+  # Action filtering
+  filter_actions: true     # Filter actions based on context
+  max_actions_per_context: 10  # Maximum actions to consider
+  
+  # Risk-based action filtering
+  risk_filtering:
+    max_exposure: 0.8      # Don't select actions if exposure > 80%
+    max_drawdown: 0.1      # Don't select actions if drawdown > 10%
+    max_positions: 5        # Don't select actions if positions > 5
+
+# Debugging and logging
+debug:
+  log_selections: true     # Log action selections
+  log_rewards: true        # Log reward calculations
+  log_exploration: true    # Log exploration vs exploitation
+  
+  # Performance monitoring
+  track_selection_time: true    # Track selection performance
+  max_selection_time: 1.0       # 1 second max per selection
+  
+  # Policy inspection
+  save_policy_snapshots: true   # Save policy snapshots
+  snapshot_frequency: 1000     # Every 1000 updates

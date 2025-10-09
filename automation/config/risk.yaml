@@ -1,0 +1,241 @@
+# Risk Management Configuration
+# CRITICAL: These rules protect your capital - review carefully!
+
+# Account-Level Risk Limits
+account_risk:
+  # Maximum percentage of account that can be at risk at any time
+  max_portfolio_risk_pct: 5.0
+  
+  # Maximum percentage of account per single trade
+  max_risk_per_trade_pct: 1.0
+  
+  # Maximum number of open positions
+  max_open_positions: 5
+  
+  # Maximum positions per instrument
+  max_positions_per_instrument: 1
+  
+  # Maximum correlated positions (instruments moving together)
+  max_correlated_positions: 3
+  correlation_threshold: 0.7
+  
+  # Daily loss limit (trading halts if exceeded)
+  daily_loss_limit_pct: 3.0
+  daily_loss_limit_usd: 150
+  
+  # Weekly loss limit
+  weekly_loss_limit_pct: 5.0
+  weekly_loss_limit_usd: 250
+
+# Position Sizing
+position_sizing:
+  method: "fixed_risk"  # Options: fixed_risk, fixed_fractional, kelly, volatility_adjusted
+  
+  fixed_risk:
+    risk_per_trade_pct: 1.0  # Risk 1% of account per trade
+  
+  fixed_fractional:
+    fraction: 0.02  # 2% of account per trade
+  
+  kelly:
+    fraction: 0.5  # Half Kelly for safety
+    min_win_rate: 0.4
+    min_trades: 30
+  
+  volatility_adjusted:
+    base_risk_pct: 1.0
+    atr_multiplier: 2.0
+    max_adjustment: 2.0  # Max 2x or 0.5x adjustment
+  
+  # Minimum and maximum position sizes
+  min_position_size_usd: 10
+  max_position_size_usd: 500
+  
+  # Account size brackets (scale positions with account growth)
+  brackets:
+    - account_size_min: 0
+      account_size_max: 1000
+      max_risk_per_trade_pct: 0.5
+      max_position_size_usd: 100
+      
+    - account_size_min: 1000
+      account_size_max: 5000
+      max_risk_per_trade_pct: 1.0
+      max_position_size_usd: 300
+      
+    - account_size_min: 5000
+      account_size_max: 999999
+      max_risk_per_trade_pct: 1.0
+      max_position_size_usd: 500
+
+# Stop Loss Rules
+stop_loss:
+  # Default stop loss method
+  method: "atr"  # Options: atr, percentage, fixed_amount, support_resistance
+  
+  atr:
+    multiplier: 2.0  # 2x ATR
+    min_distance_pct: 0.5  # Minimum 0.5% from entry
+    max_distance_pct: 3.0  # Maximum 3% from entry
+  
+  percentage:
+    default_pct: 2.0
+    min_pct: 0.5
+    max_pct: 3.0
+  
+  fixed_amount:
+    amount_usd: 20
+  
+  # Always use stop loss
+  required: true
+  
+  # Adjust stop loss as trade moves in favor
+  trailing_stop:
+    enabled: true
+    activation_profit_pct: 2.0  # Activate after 2% profit
+    trail_distance_pct: 1.0      # Trail by 1%
+    trail_distance_atr: 1.5      # Or 1.5 ATR
+
+# Take Profit Rules
+take_profit:
+  # Default take profit method
+  method: "risk_reward"  # Options: risk_reward, atr, percentage, fixed_amount
+  
+  risk_reward:
+    default_ratio: 2.0  # 2:1 reward-to-risk
+    min_ratio: 1.5
+    max_ratio: 5.0
+  
+  atr:
+    multiplier: 4.0  # 4x ATR
+  
+  percentage:
+    default_pct: 5.0
+  
+  # Partial exits
+  scale_out:
+    enabled: true
+    levels:
+      - profit_pct: 2.0
+        exit_pct: 33  # Exit 33% at 2% profit
+      - profit_pct: 4.0
+        exit_pct: 50  # Exit another 50% (of remaining) at 4%
+      # Let final 33% run with trailing stop
+
+# Time-Based Rules
+time_management:
+  # Maximum holding time (exit regardless of P&L)
+  max_holding_time_hours: 48
+  
+  # Minimum holding time (don't exit too early)
+  min_holding_time_minutes: 15
+  
+  # Close all positions before weekend (if enabled)
+  close_before_weekend: false
+  weekend_close_time: "Friday 21:00"
+  
+  # Close all positions before major news events
+  close_before_news: true
+  news_buffer_minutes: 30
+
+# Drawdown Management
+drawdown:
+  # Max drawdown from peak before halting trading
+  max_drawdown_pct: 10.0
+  max_drawdown_usd: 500
+  
+  # Action on max drawdown
+  on_max_drawdown: "halt_trading"  # Options: halt_trading, reduce_size, notify_only
+  
+  # Reduce position sizing during drawdown
+  scale_down:
+    enabled: true
+    thresholds:
+      - drawdown_pct: 5.0
+        size_multiplier: 0.75  # Reduce to 75%
+      - drawdown_pct: 7.5
+        size_multiplier: 0.5   # Reduce to 50%
+
+# Correlation Limits
+correlation:
+  # Instruments with correlation > threshold are considered correlated
+  threshold: 0.7
+  
+  # Maximum positions in highly correlated instruments
+  max_correlated_positions: 3
+  
+  # Correlation pairs to monitor
+  pairs:
+    - instruments: ["EURUSD", "GBPUSD"]
+      expected_correlation: 0.8
+    - instruments: ["BTCUSD", "ETHUSD"]
+      expected_correlation: 0.85
+    - instruments: ["GOLD", "BTCUSD"]
+      expected_correlation: 0.5
+
+# Execution Rules
+execution:
+  # Maximum slippage tolerance
+  max_slippage_pct: 0.5
+  max_slippage_bps: 10
+  
+  # Minimum time between orders for same instrument
+  min_order_interval_seconds: 60
+  
+  # Maximum retries on order failure
+  max_order_retries: 3
+  retry_delay_seconds: 5
+  
+  # Order validation
+  validate_liquidity: true
+  validate_spread: true
+  max_acceptable_spread_bps: 5
+
+# Emergency Controls
+emergency:
+  # Kill switch - halt all trading immediately
+  kill_switch: false
+  
+  # Panic close - close all positions immediately
+  panic_close: false
+  
+  # Contacts to notify on emergency
+  notifications:
+    - type: "email"
+      address: "your-email@example.com"
+    - type: "sms"
+      number: "+1234567890"
+  
+  # Auto-recovery after emergency
+  auto_recovery: false
+  recovery_delay_hours: 24
+
+# Monitoring & Alerts
+monitoring:
+  # Alert thresholds
+  alerts:
+    - condition: "daily_loss_pct > 2"
+      severity: "warning"
+      action: "notify"
+      
+    - condition: "daily_loss_pct > 3"
+      severity: "critical"
+      action: "halt_trading"
+      
+    - condition: "open_positions > 4"
+      severity: "warning"
+      action: "notify"
+      
+    - condition: "position_size_usd > 400"
+      severity: "warning"
+      action: "notify"
+  
+  # Health checks
+  health_check_interval_minutes: 5
+  
+  # Log all risk decisions
+  log_risk_decisions: true
+  
+  # Performance review frequency
+  review_frequency: "daily"  # Options: daily, weekly, monthly
+

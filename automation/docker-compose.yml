@@ -1,0 +1,145 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:16-alpine
+    container_name: trading-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-traderpass}
+      POSTGRES_DB: ${POSTGRES_DB:-trading}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    ports:
+      - "5433:5432"  # Mapped to 5433 on host to avoid conflicts
+    networks:
+      - trading-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trader} -d ${POSTGRES_DB:-trading}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Database initialization (runs once)
+  db-init:
+    image: postgres:16-alpine
+    container_name: trading-db-init
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER:-trader}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-traderpass}
+      PGDATABASE: ${POSTGRES_DB:-trading}
+    volumes:
+      - ./sql/schema.sql:/sql/schema.sql:ro
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        sleep 5 &&
+        psql -f /sql/schema.sql &&
+        echo 'Database initialized successfully!'
+      "
+    networks:
+      - trading-net
+
+  # n8n Workflow Automation
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: trading-n8n
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=${N8N_BASIC_AUTH_ACTIVE:-true}
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-change_me}
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=UTC
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=db
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-trading}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-trader}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-traderpass}
+      # Pass through environment for workflows
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-trader}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-traderpass}
+      - POSTGRES_DB=${POSTGRES_DB:-trading}
+      - AI_PROVIDER=${AI_PROVIDER:-openai}
+      - AI_BASE_URL=${AI_BASE_URL:-https://api.openai.com/v1}
+      - AI_MODEL=${AI_MODEL:-gpt-4o-mini}
+      - AI_API_KEY=${AI_API_KEY}
+      - APPROVAL_SECRET=${APPROVAL_SECRET}
+      - TRADING_HALTED=${TRADING_HALTED:-0}
+      - MCP_IMAGE=${MCP_IMAGE:-capital-mcp-server:latest}
+      - MCP_CONTAINER=${MCP_CONTAINER:-cool_hopper}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TELEGRAM_ALLOWED_USERNAMES=${TELEGRAM_ALLOWED_USERNAMES}
+      - TELEGRAM_WEBHOOK_URL=${TELEGRAM_WEBHOOK_URL}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+      - ./scripts:/scripts:ro
+      - ./config:/config:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "5678:5678"
+    networks:
+      - trading-net
+    restart: unless-stopped
+    user: "0:0"  # Run as root to access Docker socket
+
+  # MCP Caller Helper (Python scripts for MCP communication)
+  mcp-caller:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp-caller
+    container_name: trading-mcp-caller
+    depends_on:
+      - db
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-trader}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-traderpass}
+      - POSTGRES_DB=${POSTGRES_DB:-trading}
+      - MCP_IMAGE=${MCP_IMAGE:-capital-mcp-server:latest}
+      - APPROVAL_SECRET=${APPROVAL_SECRET}
+      - TRADING_HALTED=${TRADING_HALTED:-0}
+      - CAP_ENVIRONMENT=${CAP_ENVIRONMENT:-demo}
+      - CAP_API_KEY=${CAP_API_KEY}
+      - CAP_IDENTIFIER=${CAP_IDENTIFIER}
+      - CAP_PASSWORD=${CAP_PASSWORD}
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./config:/app/config:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "8000:8000"  # MCP API server
+    networks:
+      - trading-net
+    command: python /app/scripts/mcp_api.py  # Start HTTP API server
+    restart: unless-stopped
+    user: "0:0"  # Run as root to access Docker socket
+
+networks:
+  trading-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+    driver: local
+  n8n_data:
+    driver: local
+

@@ -1,0 +1,201 @@
+{
+  "name": "Post-Trade Management",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "*/1 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM orders WHERE status = 'FILLED' AND placed_at > NOW() - INTERVAL '24 hours'"
+      },
+      "id": "get-filled-orders",
+      "name": "Get Filled Orders",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [300, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM trades WHERE closed_at IS NULL"
+      },
+      "id": "get-open-trades",
+      "name": "Get Open Trades",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [500, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process open trades for exit signals\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  if (data.trade_id && data.symbol) {\n    // Calculate holding time\n    const openedAt = new Date(data.opened_at);\n    const now = new Date();\n    const holdingHours = (now - openedAt) / (1000 * 60 * 60);\n    \n    // Check exit conditions\n    const exitConditions = {\n      maxHoldingTime: holdingHours > 48, // 48 hours max\n      stopLoss: false, // Would need current price vs stop loss\n      takeProfit: false, // Would need current price vs take profit\n      trailingStop: false // Would need trailing stop logic\n    };\n    \n    const shouldExit = Object.values(exitConditions).some(condition => condition === true);\n    \n    results.push({\n      json: {\n        ...data,\n        holdingHours: holdingHours,\n        exitConditions: exitConditions,\n        shouldExit: shouldExit,\n        timestamp: new Date().toISOString()\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "check-exit-conditions",
+      "name": "Check Exit Conditions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Update bandit with trade results\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  if (data.shouldExit && data.context_json) {\n    try {\n      const context = JSON.parse(data.context_json);\n      const reward = data.pnl > 0 ? 1.0 : -0.5; // Simple reward calculation\n      \n      results.push({\n        json: {\n          trade_id: data.trade_id,\n          context: context,\n          reward: reward,\n          pnl: data.pnl,\n          timestamp: new Date().toISOString()\n        }\n      });\n    } catch (e) {\n      console.log('Error parsing context:', e);\n    }\n  }\n}\n\nreturn results;"
+      },
+      "id": "prepare-bandit-update",
+      "name": "Prepare Bandit Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "command": "python /scripts/bandit.py --mode update --context '{{ JSON.stringify($json.context) }}' --action '{{ $json.context.action }}' --reward {{ $json.reward }}",
+        "options": {}
+      },
+      "id": "update-bandit",
+      "name": "Update Bandit",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list"
+        },
+        "table": {
+          "__rl": true,
+          "value": "system_events",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "event_type": "POST_TRADE_MANAGEMENT",
+            "severity": "INFO",
+            "message": "Post-trade management completed",
+            "details": "={{ JSON.stringify({trades_processed: $json.trade_id, bandit_updated: true}) }}",
+            "source": "n8n_post_trade_management_workflow"
+          }
+        },
+        "options": {}
+      },
+      "id": "log-completion",
+      "name": "Log Completion",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1300, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "cron-trigger": {
+      "main": [
+        [
+          {
+            "node": "get-filled-orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-filled-orders": {
+      "main": [
+        [
+          {
+            "node": "get-open-trades",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-open-trades": {
+      "main": [
+        [
+          {
+            "node": "check-exit-conditions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check-exit-conditions": {
+      "main": [
+        [
+          {
+            "node": "prepare-bandit-update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare-bandit-update": {
+      "main": [
+        [
+          {
+            "node": "update-bandit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "update-bandit": {
+      "main": [
+        [
+          {
+            "node": "log-completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-08T12:00:00.000Z",
+  "versionId": "1"
+}

@@ -1,0 +1,216 @@
+# Trading Automation Schedule Configuration
+# Cron-based scheduling for various automation tasks
+
+# Data collection schedule
+data_collection:
+  # Market data polling
+  market_data:
+    frequency: "*/15 * * * *"  # Every 15 minutes
+    timeframes: ["15m", "1h"]
+    instruments: "all"  # or specific list
+    
+  # News data collection
+  news_data:
+    frequency: "*/30 * * * *"  # Every 30 minutes
+    sources: ["general", "financial"]
+    
+  # BSM data collection (if enabled)
+  bsm_data:
+    frequency: "*/60 * * * *"  # Every hour
+    enabled: false  # Only if BSM is enabled
+
+# Signal generation schedule
+signal_generation:
+  # Technical analysis signals
+  ta_signals:
+    frequency: "*/15 * * * *"  # Every 15 minutes
+    strategies: ["ORB", "SMA_RSI_ATR", "Donchian"]
+    
+  # BSM signals (if enabled)
+  bsm_signals:
+    frequency: "*/60 * * * *"  # Every hour
+    enabled: false  # Only if BSM is enabled
+    
+  # Context building
+  context_building:
+    frequency: "*/15 * * * *"  # Every 15 minutes
+    features: ["ta", "bsm", "regime", "risk"]
+
+# Bandit learning schedule
+bandit_learning:
+  # Action selection
+  action_selection:
+    frequency: "*/15 * * * *"  # Every 15 minutes
+    trigger: "new_signal"  # Trigger on new signals
+    
+  # Policy updates
+  policy_updates:
+    frequency: "0 */6 * * *"  # Every 6 hours
+    min_observations: 10
+    
+  # Performance evaluation
+  performance_evaluation:
+    frequency: "0 0 * * *"  # Daily at midnight
+    metrics: ["win_rate", "r_multiple", "drawdown"]
+
+# Order management schedule
+order_management:
+  # Order placement
+  order_placement:
+    frequency: "*/1 * * * *"  # Every minute
+    trigger: "approved_intent"
+    
+  # Order monitoring
+  order_monitoring:
+    frequency: "*/1 * * * *"  # Every minute
+    check_status: true
+    update_positions: true
+    
+  # Risk management
+  risk_management:
+    frequency: "*/5 * * * *"  # Every 5 minutes
+    check_limits: true
+    update_exposure: true
+
+# Post-trade management
+post_trade:
+  # Trade monitoring
+  trade_monitoring:
+    frequency: "*/1 * * * *"  # Every minute
+    check_exits: true
+    update_pnl: true
+    
+  # Exit signal generation
+  exit_signals:
+    frequency: "*/1 * * * *"  # Every minute
+    strategies: ["stop_loss", "take_profit", "trailing_stop"]
+    
+  # Trade closure
+  trade_closure:
+    frequency: "*/1 * * * *"  # Every minute
+    auto_close: true
+    manual_override: true
+
+# Evaluation and reporting
+evaluation:
+  # Daily evaluation
+  daily_evaluation:
+    frequency: "0 23 * * *"  # Daily at 11 PM
+    tasks:
+      - performance_analysis
+      - bandit_update
+      - risk_report
+      - daily_summary
+    
+  # Weekly evaluation
+  weekly_evaluation:
+    frequency: "0 0 * * 1"  # Weekly on Monday
+    tasks:
+      - strategy_performance
+      - bandit_analysis
+      - risk_assessment
+      - weekly_report
+    
+  # Monthly evaluation
+  monthly_evaluation:
+    frequency: "0 0 1 * *"  # Monthly on 1st
+    tasks:
+      - comprehensive_analysis
+      - strategy_optimization
+      - risk_review
+      - monthly_report
+
+# Maintenance schedule
+maintenance:
+  # Database cleanup
+  database_cleanup:
+    frequency: "0 2 * * *"  # Daily at 2 AM
+    tasks:
+      - clean_old_data
+      - optimize_indexes
+      - backup_data
+    
+  # Log rotation
+  log_rotation:
+    frequency: "0 3 * * *"  # Daily at 3 AM
+    max_size: "100MB"
+    keep_days: 30
+    
+  # Health checks
+  health_checks:
+    frequency: "*/5 * * * *"  # Every 5 minutes
+    checks:
+      - database_connectivity
+      - mcp_server_status
+      - n8n_workflows
+      - system_resources
+
+# Market hours schedule
+market_hours:
+  # Trading hours (UTC)
+  trading_sessions:
+    - name: "Asian Session"
+      start: "00:00"
+      end: "09:00"
+      enabled: false  # Start conservative
+      
+    - name: "London Session"
+      start: "08:00"
+      end: "17:00"
+      enabled: true
+      
+    - name: "New York Session"
+      start: "13:00"
+      end: "22:00"
+      enabled: true
+      
+    - name: "Overlap (London + NY)"
+      start: "13:00"
+      end: "17:00"
+      enabled: true
+      priority: high
+  
+  # Non-trading hours
+  non_trading:
+    - name: "Overnight"
+      start: "22:00"
+      end: "00:00"
+      enabled: true
+      activities: ["data_collection", "analysis", "reporting"]
+
+# Timezone settings
+timezone:
+  default: "UTC"
+  display: "UTC"
+  
+# Holiday schedule
+holidays:
+  # Market holidays (UTC dates)
+  - date: "2025-01-01"
+    name: "New Year's Day"
+    markets_closed: true
+    
+  - date: "2025-12-25"
+    name: "Christmas Day"
+    markets_closed: true
+    
+  # Add more holidays as needed
+
+# Emergency procedures
+emergency:
+  # Kill switch activation
+  kill_switch:
+    frequency: "*/1 * * * *"  # Check every minute
+    conditions:
+      - trading_halted_env
+      - max_drawdown_exceeded
+      - system_error_detected
+    
+  # Alert notifications
+  alerts:
+    frequency: "*/1 * * * *"  # Check every minute
+    conditions:
+      - position_limit_exceeded
+      - risk_limit_breached
+      - system_failure
+      - unexpected_behavior

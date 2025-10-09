@@ -1,0 +1,140 @@
+# Trading Strategies Configuration
+# Defines strategy parameters and selection logic
+
+strategies:
+  # Strategy 1: Opening Range Breakout + VWAP
+  - name: "ORB_VWAP"
+    display_name: "Opening Range Breakout with VWAP"
+    enabled: true
+    timeframe: "15m"
+    
+    parameters:
+      lookback_periods: 15  # Opening range definition
+      volume_surge_multiplier: 1.5  # Volume must be 1.5x average
+      min_breakout_pct: 0.3  # Minimum 0.3% breakout from range
+    
+    entry_rules:
+      - "Price breaks above ORB high AND price > VWAP AND volume surge"
+      - "Price breaks below ORB low AND price < VWAP AND volume surge"
+    
+    exit_rules:
+      - "Stop loss: 1.5 * ATR"
+      - "Take profit: 3.0 * ATR (2:1 RR minimum)"
+      - "Trailing stop: 1.0 * ATR once 2:1 RR achieved"
+    
+    risk:
+      max_risk_per_trade_pct: 1.0
+      min_risk_reward_ratio: 2.0
+    
+    bandit_params:
+      initial_weight: 0.33
+      epsilon: 0.2  # 20% exploration
+    
+  # Strategy 2: SMA/RSI/ATR Trend Following
+  - name: "SMA_RSI_ATR"
+    display_name: "SMA Crossover with RSI Filter"
+    enabled: true
+    timeframe: "1h"
+    
+    parameters:
+      sma_fast: 20
+      sma_slow: 50
+      rsi_period: 14
+      rsi_oversold: 30
+      rsi_overbought: 70
+      atr_period: 14
+    
+    entry_rules:
+      - "BUY: SMA20 crosses above SMA50 OR (SMA20 > SMA50 AND RSI < 30)"
+      - "SELL: SMA20 crosses below SMA50 OR (SMA20 < SMA50 AND RSI > 70)"
+    
+    exit_rules:
+      - "Stop loss: 2.0 * ATR"
+      - "Take profit: 4.0 * ATR (2:1 RR)"
+      - "Exit on opposite crossover"
+    
+    risk:
+      max_risk_per_trade_pct: 1.5
+      min_risk_reward_ratio: 2.0
+    
+    bandit_params:
+      initial_weight: 0.33
+      epsilon: 0.2
+  
+  # Strategy 3: Donchian Channel Breakout
+  - name: "DONCHIAN_BREAKOUT"
+    display_name: "Donchian Channel Breakout"
+    enabled: true
+    timeframe: "15m"
+    
+    parameters:
+      channel_period: 20
+      volume_confirm: true
+      volume_multiplier: 1.2
+    
+    entry_rules:
+      - "BUY: Price closes above upper Donchian band with volume confirmation"
+      - "SELL: Price closes below lower Donchian band with volume confirmation"
+    
+    exit_rules:
+      - "Stop loss: Donchian middle line"
+      - "Take profit: 2x channel width"
+      - "Exit on opposite channel touch"
+    
+    risk:
+      max_risk_per_trade_pct: 1.0
+      min_risk_reward_ratio: 1.5
+    
+    bandit_params:
+      initial_weight: 0.34
+      epsilon: 0.2
+
+# Multi-Armed Bandit Configuration
+bandit:
+  enabled: true
+  algorithm: "epsilon_greedy"  # Options: epsilon_greedy, ucb, thompson_sampling
+  
+  epsilon_greedy:
+    initial_epsilon: 0.2  # 20% exploration
+    decay_rate: 0.995     # Decay epsilon over time
+    min_epsilon: 0.05     # Minimum exploration
+  
+  ucb:
+    confidence_level: 1.96  # 95% confidence
+  
+  # Evaluation window
+  window_days: 20
+  min_samples: 10  # Minimum trades before strategy considered
+  
+  # Rebalancing
+  rebalance_frequency: '0 0 * * *'  # Daily at midnight
+  force_exploration: true  # Ensure all strategies get some allocation
+
+# Strategy Selection Logic
+selection:
+  mode: "bandit"  # Options: bandit, round_robin, equal_weight, best_only
+  
+  # If mode is best_only
+  best_only:
+    metric: "sharpe_ratio"  # Options: sharpe_ratio, win_rate, profit_factor
+    min_trades: 20
+  
+  # Diversification rules
+  max_same_strategy_positions: 2
+  max_correlated_positions: 3  # Max positions in correlated instruments
+
+# Signal Aggregation (if multiple strategies signal same instrument)
+signal_aggregation:
+  method: "weighted_average"  # Options: weighted_average, unanimous, majority
+  
+  weights:
+    ORB_VWAP: 0.35
+    SMA_RSI_ATR: 0.35
+    DONCHIAN_BREAKOUT: 0.30
+  
+  min_confidence: 0.6  # Minimum confidence to act on signal
+  
+  unanimous:
+    require_all: false
+    require_n: 2  # At least 2 strategies must agree
+

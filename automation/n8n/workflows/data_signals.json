@@ -1,0 +1,352 @@
+{
+  "name": "Data Collection & Signals",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "*/15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT symbol, epic FROM instruments WHERE enabled = true ORDER BY priority DESC, symbol"
+      },
+      "id": "get-watchlist",
+      "name": "Get Watchlist",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [300, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process watchlist items\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  // Handle different data formats\n  const symbol = data.symbol || data.Symbol || data.SYMBOL;\n  const epic = data.epic || data.Epic || data.EPIC;\n  \n  if (symbol && epic) {\n    results.push({\n      json: {\n        symbol: symbol,\n        epic: epic,\n        timestamp: new Date().toISOString()\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "process-watchlist",
+      "name": "Process Watchlist",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://mcp-caller:8000/mcp/batch_quotes",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({epics: $input.all().map(i => i.json.epic)}) }}",
+        "options": {}
+      },
+      "id": "batch-get-quotes",
+      "name": "Batch Get Quotes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split batch quote results and parse\nconst quotes = $input.item.json;\nconst items = [];\n\nfor (const [epic, data] of Object.entries(quotes)) {\n  const text = data.text || data.error || '';\n  \n  // Parse bid/ask from text\n  const bidMatch = text.match(/Bid:\\s*([0-9.+-]+)/i);\n  const askMatch = text.match(/(Offer|Ask):\\s*([0-9.+-]+)/i);\n  const bid = bidMatch ? Number(bidMatch[1]) : 0;\n  const ask = askMatch ? Number(askMatch[2]) : 0;\n  const mid = bid && ask ? (bid + ask) / 2 : 0;\n  \n  items.push({\n    json: {\n      epic: epic,\n      symbol: epic,\n      bid: bid,\n      ask: ask,\n      mid: mid,\n      quote_text: text,\n      timestamp: new Date().toISOString()\n    }\n  });\n}\n\nreturn items;"
+      },
+      "id": "parse-quote",
+      "name": "Parse Quote",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT symbol, tf, ts, open, high, low, close, volume FROM candles WHERE symbol = '{{ $json.symbol }}' AND tf = '15m' ORDER BY ts DESC LIMIT 200"
+      },
+      "id": "get-candles",
+      "name": "Get Candles",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1100, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate candles per symbol from Parse Quote\nconst parseQuoteItems = $items('Parse Quote');\nconst candleItems = $input.all();\n\n// Group candles by symbol\nconst candlesBySymbol = {};\n\nfor (const item of candleItems) {\n  const data = item.json;\n  const symbol = data.symbol;\n  \n  if (!candlesBySymbol[symbol]) {\n    candlesBySymbol[symbol] = [];\n  }\n  \n  candlesBySymbol[symbol].push({\n    ts: data.ts,\n    open: parseFloat(data.open),\n    high: parseFloat(data.high),\n    low: parseFloat(data.low),\n    close: parseFloat(data.close),\n    volume: parseFloat(data.volume || 0)\n  });\n}\n\n// Create one item per symbol with all its candles\nconst results = [];\n\nfor (const [symbol, candles] of Object.entries(candlesBySymbol)) {\n  // Sort candles by timestamp (oldest first for indicator calculation)\n  candles.sort((a, b) => a.ts - b.ts);\n  \n  // Find matching epic from Parse Quote\n  const quoteItem = parseQuoteItems.find(q => q.json.symbol === symbol);\n  const epic = quoteItem ? quoteItem.json.epic : symbol;\n  \n  // Check if we have enough candles for indicators (need at least 20)\n  const needsHistoricalData = candles.length < 20;\n  \n  results.push({\n    json: {\n      symbol: symbol,\n      epic: epic,\n      candles: candles,\n      candle_count: candles.length,\n      needs_historical_data: needsHistoricalData,\n      insufficient_data: candles.length < 20\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "prepare-candles",
+      "name": "Prepare Candles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter out symbols with insufficient data for indicators\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  if (data.candle_count < 20) {\n    console.log(`Skipping ${data.symbol} - insufficient data (${data.candle_count} candles, need 20+)`);\n    continue;\n  }\n  \n  // Only process symbols with enough data\n  results.push(item);\n}\n\nreturn results;"
+      },
+      "id": "filter-sufficient-data",
+      "name": "Filter Sufficient Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://mcp-caller:8000/indicators",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({symbol: $json.symbol, candles: $json.candles}) }}",
+        "options": {}
+      },
+      "id": "calculate-indicators",
+      "name": "Calculate Indicators",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse indicators response - extract full structure from API\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  if (data.error) {\n    console.log(`Indicator error for ${data.symbol}: ${data.error}`);\n    continue;\n  }\n  \n  // The API returns the full indicator output including signals\n  // Just pass it through with proper structure\n  results.push({\n    json: {\n      symbol: data.symbol,\n      epic: data.symbol, // Use symbol as epic if not present\n      indicators: data, // The full response from indicators.py\n      timestamp: new Date().toISOString()\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "parse-indicators",
+      "name": "Parse Indicators",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1700, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract signals from indicators (handle nested structure)\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  // Signals can be at data.signals or data.indicators.signals\n  const signals = data.signals || (data.indicators && data.indicators.signals);\n  \n  if (!signals) {\n    console.log(`No signals for ${data.symbol} - structure:`, JSON.stringify(Object.keys(data)));\n    continue;\n  }\n  \n  const signalArray = [];\n  \n  // Convert signal object to array format\n  for (const [strategy, signalData] of Object.entries(signals)) {\n    if (signalData.signal && signalData.signal !== 'NEUTRAL') {\n      signalArray.push({\n        strategy: strategy,\n        signal: signalData.signal,\n        strength: signalData.strength,\n        confidence: signalData.confidence\n      });\n    }\n  }\n  \n  // Output all symbols (even without non-NEUTRAL signals) for debugging\n  results.push({\n    json: {\n      symbol: data.symbol,\n      epic: data.epic || data.symbol,\n      signals: signalArray,\n      signal_count: signalArray.length,\n      all_indicators: data.indicators || data,\n      timestamp: new Date().toISOString()\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "generate-signals",
+      "name": "Generate Signals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list"
+        },
+        "table": {
+          "__rl": true,
+          "value": "signals",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "symbol": "={{ $json.symbol }}",
+            "tf": "15m",
+            "ts": "={{ Math.floor(Date.now() / 1000) }}",
+            "strategy": "={{ $json.signals && $json.signals.length > 0 ? $json.signals[0].strategy : 'NONE' }}",
+            "signal": "={{ $json.signals && $json.signals.length > 0 ? $json.signals[0].signal : 'NEUTRAL' }}",
+            "score": "={{ $json.signals && $json.signals.length > 0 ? $json.signals[0].strength : 0 }}",
+            "features_json": "={{ JSON.stringify($json.all_indicators || {}) }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "store-signals",
+      "name": "Store Signals",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2100, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO system_events (event_type, severity, message, details, source) VALUES ('DATA_COLLECTION', 'INFO', 'Data collection and signal generation completed', '{{ JSON.stringify({symbols_processed: $json.symbol, signal_count: $json.signal_count || 0}) }}', 'n8n_data_signals_workflow')"
+      },
+      "id": "log-completion",
+      "name": "Log Completion",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2300, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "cron-trigger": {
+      "main": [
+        [
+          {
+            "node": "get-watchlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-watchlist": {
+      "main": [
+        [
+          {
+            "node": "process-watchlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "process-watchlist": {
+      "main": [
+        [
+          {
+            "node": "batch-get-quotes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "batch-get-quotes": {
+      "main": [
+        [
+          {
+            "node": "parse-quote",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-quote": {
+      "main": [
+        [
+          {
+            "node": "get-candles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-candles": {
+      "main": [
+        [
+          {
+            "node": "prepare-candles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare-candles": {
+      "main": [
+        [
+          {
+            "node": "calculate-indicators",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "calculate-indicators": {
+      "main": [
+        [
+          {
+            "node": "parse-indicators",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-indicators": {
+      "main": [
+        [
+          {
+            "node": "generate-signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "generate-signals": {
+      "main": [
+        [
+          {
+            "node": "store-signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "store-signals": {
+      "main": [
+        [
+          {
+            "node": "log-completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-08T12:00:00.000Z",
+  "versionId": "1"
+}

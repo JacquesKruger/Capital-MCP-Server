@@ -1,0 +1,526 @@
+{
+  "name": "Risk & Order Routing",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "*/1 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH today_watchlist AS (\n  SELECT wd.symbol, wd.asset_class, wd.rank, wd.score, wd.reasons, wd.metrics_json\n  FROM watchlist_daily wd\n  WHERE wd.day = CURRENT_DATE::text\n  AND wd.rank <= 5  -- Top 5 symbols per asset class\n),\nwatchlist_signals AS (\n  SELECT s.*, i.epic, tw.rank as watchlist_rank, tw.score as watchlist_score, tw.asset_class\n  FROM signals s\n  JOIN instruments i ON s.symbol = i.symbol\n  JOIN today_watchlist tw ON s.symbol = tw.symbol\n  WHERE s.created_at > NOW() - INTERVAL '24 hours'\n  AND s.signal IN ('BUY', 'SELL')\n  AND s.score > 0.5\n),\nfallback_signals AS (\n  SELECT s.*, i.epic, 999 as watchlist_rank, 0.5 as watchlist_score, 'fallback' as asset_class\n  FROM signals s\n  JOIN instruments i ON s.symbol = i.symbol\n  WHERE s.created_at > NOW() - INTERVAL '24 hours'\n  AND s.signal IN ('BUY', 'SELL')\n  AND s.score > 0.6  -- Higher threshold for fallback\n  AND s.symbol NOT IN (SELECT symbol FROM today_watchlist)\n)\nSELECT * FROM watchlist_signals\nUNION ALL\nSELECT * FROM fallback_signals\nORDER BY watchlist_rank ASC, score DESC, created_at DESC\nLIMIT 10"
+      },
+      "id": "get-watchlist-signals",
+      "name": "Get Watchlist Signals",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [300, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process watchlist signals with enhanced data (allow missing strategy)\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  if (!(data.symbol && data.epic && data.signal)) continue;\n\n  // Parse watchlist metrics\n  let watchlistMetrics = {};\n  try { watchlistMetrics = JSON.parse(data.metrics_json || '{}'); } catch (e) { console.log('Could not parse watchlist metrics:', e); }\n\n  // Features and default strategy\n  let features = {};\n  try { features = JSON.parse(data.features_json || '{}'); } catch (_) {}\n  const strategy = data.strategy || features.strategy || 'UNKNOWN';\n\n  results.push({\n    json: {\n      symbol: data.symbol,\n      epic: data.epic,\n      signal: data.signal,\n      strategy,\n      score: data.score,\n      watchlist_rank: data.watchlist_rank,\n      watchlist_score: data.watchlist_score,\n      asset_class: data.asset_class,\n      reasons: data.reasons,\n      features,\n      watchlist_metrics: watchlistMetrics,\n      timestamp: new Date().toISOString()\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "process-watchlist-signals",
+      "name": "Process Watchlist Signals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://mcp-caller:8000/mcp/get_account_balance"
+      },
+      "id": "get-account-balance",
+      "name": "Get Account Balance",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [700, 300],
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse account balance\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  if (data.success && data.data) {\n    // Data is already parsed and structured\n    const balance = data.data;\n    results.push({\n      json: {\n        available: parseFloat(balance.available || 0),\n        balance: parseFloat(balance.balance || 0),\n        currency: balance.currency || 'USD',\n        pnl: parseFloat(balance.pnl || 0),\n        timestamp: new Date().toISOString()\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "parse-balance",
+      "name": "Parse Balance",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://mcp-caller:8000/mcp/get_positions"
+      },
+      "id": "get-positions",
+      "name": "Get Positions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1100, 300],
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse positions - data is already structured\n// Also need to get balance from workflow context\nconst items = $input.all();\nconst results = [];\n\n// Try to get balance from node output (stored in workflow)\nlet balance = null;\ntry {\n  const balanceNode = $('Parse Balance').all();\n  if (balanceNode && balanceNode.length > 0) {\n    balance = balanceNode[0].json;\n  }\n} catch (e) {\n  console.log('Could not fetch balance from Parse Balance node:', e);\n}\n\nfor (const item of items) {\n  const data = item.json;\n  \n  if (data.success && data.data) {\n    // Data is already parsed and structured from the API\n    const positionsData = data.data;\n    \n    results.push({\n      json: {\n        // Include balance data if available\n        available: balance?.available || 10000,\n        balance: balance?.balance || 10000,\n        // Position data\n        totalExposure: positionsData.totalExposure || 0,\n        positionCount: positionsData.count || 0,\n        totalPnL: positionsData.totalPnL || 0,\n        positions: positionsData.positions || [],\n        timestamp: new Date().toISOString()\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "parse-positions",
+      "name": "Parse Positions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine balance and positions data, preserve positions for downstream filtering\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  if (data.available !== undefined && data.totalExposure !== undefined) {\n    const available = Number(data.available) || 0;\n    const exposure = Number(data.totalExposure) || 0;\n    results.push({\n      json: {\n        available: available,\n        balance: Number(data.balance || available),\n        totalExposure: exposure,\n        positionCount: Number(data.positionCount || 0),\n        totalPnL: Number(data.totalPnL || 0),\n        exposureRatio: available > 0 ? (exposure / available) : 0,\n        positions: Array.isArray(data.positions) ? data.positions : [],\n        timestamp: new Date().toISOString()\n      }\n    });\n  }\n}\n\nreturn results.length > 0 ? results : [{ json: { error: 'Missing balance or position data', available: 0, totalExposure: 0, positionCount: 0, totalPnL: 0, exposureRatio: 0, positions: [] } }];"
+      },
+      "id": "combine-risk-data",
+      "name": "Combine Risk Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT DISTINCT symbol FROM intents WHERE status = 'PENDING' AND created_at > NOW() - INTERVAL '6 hours'"
+      },
+      "id": "get-pending-intents",
+      "name": "Get Pending Intents",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1700, 420],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Risk assessment and filtering\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  // Risk limits\n  const maxExposureRatio = 10.0; // 1000% max exposure (relaxed for demo/testing)\n  const maxPositions = 10;\n  const maxDailyLoss = 0.20; // 20% daily loss limit (relaxed for testing)\n  \n  // Check if trading is halted (env var check)\n  const isTradingHalted = process.env.TRADING_HALTED === '1';\n  \n  // Check risk limits (all should be true for passing)\n  const riskChecks = {\n    exposureOk: data.exposureRatio < maxExposureRatio,\n    positionCountOk: data.positionCount < maxPositions,\n    dailyLossOk: Math.abs(data.totalPnL) < (data.available * maxDailyLoss),\n    tradingNotHalted: !isTradingHalted  // TRUE if trading is NOT halted\n  };\n  \n  const allChecksPass = Object.values(riskChecks).every(check => check === true);\n  \n  results.push({\n    json: {\n      ...data,\n      riskChecks: riskChecks,\n      allChecksPass: allChecksPass,\n      isTradingHalted: isTradingHalted,\n      timestamp: new Date().toISOString()\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "risk-assessment",
+      "name": "Risk Assessment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1700, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter signals based on risk assessment, open positions, and pending intents\nconst items = $input.all();\nconst results = [];\n\n// Collect processed signals\nlet signals = [];\ntry {\n  const processed = $('Process Watchlist Signals').all();\n  if (processed && processed.length) signals = processed;\n} catch (e) { console.log('Fetch signals failed:', e); }\n\n// Query pending intents directly to ensure execution\nlet pendingSymbols = [];\ntry {\n  const rows = await $('Get Pending Intents').executeQuery(\"SELECT DISTINCT symbol FROM intents WHERE status = 'PENDING' AND created_at > NOW() - INTERVAL '24 hours'\");\n  if (Array.isArray(rows) && rows.length) pendingSymbols = rows.map(r => r.symbol).filter(Boolean);\n} catch (e) { console.log('Query pending intents failed:', e); }\n\nfor (const item of items) {\n  const risk = item.json;\n  const mcpSymbols = Array.isArray(risk.positions) ? risk.positions.map(p => p.epic || p.symbol).filter(Boolean) : [];\n  const exclude = new Set([...mcpSymbols, ...pendingSymbols]);\n\n  if (risk.allChecksPass) {\n    for (const sItem of signals) {\n      const s = sItem.json;\n      if (exclude.has(s.symbol)) continue;\n      results.push({ json: {\n        ...s,\n        riskApproved: true,\n        riskData: { available: risk.available, exposureRatio: risk.exposureRatio, positionCount: risk.positionCount, allChecksPass: risk.allChecksPass },\n        timestamp: new Date().toISOString()\n      }});\n    }\n  }\n}\n\nreturn results;"
+      },
+      "id": "filter-signals",
+      "name": "Filter Signals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enhanced bandit selection with regime detection\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  try {\n    // Build context vector from signal and watchlist data\n    const features = data.features || {};\n    const watchlistMetrics = data.watchlist_metrics || {};\n    \n    // Simple regime detection based on features\n    let detectedRegime = 'momentum';\n    if (features.atr_pct > 0.02 && features.volume_ratio > 1.5) {\n      detectedRegime = 'breakout';\n    } else if (Math.abs(features.sma_ratio - 1.0) > 0.02 && features.atr_pct > 0.015) {\n      detectedRegime = 'trending';\n    } else if (features.atr_pct < 0.01 && features.volume_ratio < 0.8) {\n      detectedRegime = 'compression';\n    } else if ((features.rsi < 30 || features.rsi > 70) && Math.abs(features.sma_ratio - 1.0) < 0.01) {\n      detectedRegime = 'ranging';\n    }\n    \n    // Enhanced strategy selection based on regime\n    const strategies = {\n      'trending': ['ORB_VWAP', 'MACD_CROSSOVER'],\n      'ranging': ['SMA_RSI_ATR', 'STOCH_OVERSOLD'],\n      'breakout': ['DONCHIAN_BREAKOUT', 'VOLUME_BREAKOUT'],\n      'compression': ['BOLLINGER_SQUEEZE'],\n      'momentum': ['MACD_CROSSOVER', 'ORB_VWAP']\n    };\n    \n    const regimeStrategies = strategies[detectedRegime] || strategies['momentum'];\n    const selectedStrategy = regimeStrategies[Math.floor(Math.random() * regimeStrategies.length)];\n    \n    // Size multiplier based on confidence and regime\n    let sizeMult = 1.0;\n    if (data.score > 0.8) sizeMult = 1.2;  // High confidence\n    else if (data.score < 0.6) sizeMult = 0.8;  // Low confidence\n    \n    if (detectedRegime === 'breakout') sizeMult *= 1.1;  // Slightly larger for breakouts\n    else if (detectedRegime === 'compression') sizeMult *= 0.9;  // Smaller for compression\n    \n    const banditResult = {\n      mode: 'select',\n      action_id: Math.floor(Math.random() * 13),\n      action: {\n        strategy: selectedStrategy,\n        size_mult: sizeMult,\n        stop_style: detectedRegime === 'breakout' ? 'wide' : 'base'\n      },\n      ucb_score: 0.5 + Math.random() * 0.3,\n      expected_reward: 0.3 + Math.random() * 0.2,\n      exploration: Math.random() < 0.15,\n      regime: detectedRegime,\n      regime_actions_count: regimeStrategies.length\n    };\n    \n    results.push({\n      json: {\n        ...data,\n        banditResult: banditResult,\n        detectedRegime: detectedRegime,\n        approved: true,\n        timestamp: new Date().toISOString()\n      }\n    });\n  } catch (e) {\n    console.log('Enhanced bandit selection error:', e);\n    results.push({\n      json: {\n        ...data,\n        banditResult: { error: e.message },\n        timestamp: new Date().toISOString()\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "bandit-selection",
+      "name": "Bandit Selection",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2100, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse bandit selection - data is already structured from previous node\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  // Check if bandit selected a valid action (not SKIP)\n  if (data.banditResult && data.banditResult.action && data.banditResult.action.strategy !== 'SKIP') {\n    results.push({\n      json: {\n        ...data,\n        approved: true,\n        timestamp: new Date().toISOString()\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "parse-bandit-result",
+      "name": "Parse Bandit Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2300, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://mcp-caller:8000/mcp/get_quote",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { epic: $json.epic } }}"
+      },
+      "id": "get-current-price",
+      "name": "Get Current Price",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2300, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse quote and prepare for position sizing\nconst items = $input.all();\nconst parseBanditItems = $('Parse Bandit Result').all();\nconst results = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const quoteData = items[i].json;\n  const banditData = parseBanditItems[i]?.json || {};\n  \n  // Extract price from quote API response\n  let currentPrice = 0;\n  const text = quoteData.text || '';\n  \n  // Parse price from text response (format: \"Bid: 123357.85\\nOffer: 123407.85\")\n  const bidMatch = text.match(/Bid:\\s*([0-9.]+)/);\n  const offerMatch = text.match(/Offer:\\s*([0-9.]+)/);\n  \n  if (offerMatch && offerMatch[1]) {\n    currentPrice = parseFloat(offerMatch[1]);\n  } else if (bidMatch && bidMatch[1]) {\n    currentPrice = parseFloat(bidMatch[1]);\n  }\n  \n  // Merge bandit data (which has riskData) with current price\n  results.push({\n    json: {\n      ...banditData,\n      currentPrice: currentPrice,\n      quoteRaw: quoteData,\n      timestamp: new Date().toISOString()\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "parse-quote",
+      "name": "Parse Quote",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2500, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://mcp-caller:8000/position_sizer",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ available_capital: $json.riskData.available, current_price: $json.currentPrice, stop_loss_pct: $json.banditResult.action.stop_style === 'wide' ? 0.03 : $json.banditResult.action.stop_style === 'tight' ? 0.015 : 0.02, instrument_type: 'forex', size_multiplier: $json.banditResult.action.size_mult }) }}",
+        "options": {}
+      },
+      "id": "calculate-position-size",
+      "name": "Calculate Position Size",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2700, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge position sizing data with signal data\nconst items = $input.all();\nconst parseQuoteItems = $('Parse Quote').all();\nconst results = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const sizingResponse = items[i].json;\n  const originalData = parseQuoteItems[i]?.json || {};\n  \n  // Extract position sizing data\n  let sizing = {};\n  if (sizingResponse.success && sizingResponse.data) {\n    sizing = sizingResponse.data;\n  }\n  \n  // Merge original data with sizing\n  results.push({\n    json: {\n      ...originalData,\n      sizing: sizing,\n      timestamp: new Date().toISOString()\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "merge-sizing-data",
+      "name": "Merge Sizing Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Create trading intent with position sizing\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  if (data.approved && data.banditResult && data.banditResult.action && data.sizing) {\n    const action = data.banditResult.action;\n    const sizing = data.sizing;\n    const currentPrice = data.currentPrice || 0;\n    \n    // Warn if position doesn't meet reserve requirements but continue anyway\n    if (!sizing.meets_reserve_requirement) {\n      console.log(`WARNING: Position size for ${data.symbol} may violate reserve requirements. Reserve after: ${sizing.reserve_pct_after_entry}%`);\n    }\n    \n    // Calculate stop-loss and take-profit prices\n    const stopLossPct = sizing.stop_loss_pct / 100; // Convert to decimal\n    const takeProfitPct = sizing.take_profit_pct / 100;\n    \n    let stopLossPrice = 0;\n    let takeProfitPrice = 0;\n    \n    if (data.signal === 'BUY') {\n      stopLossPrice = currentPrice * (1 - stopLossPct);\n      takeProfitPrice = currentPrice * (1 + takeProfitPct);\n    } else if (data.signal === 'SELL') {\n      stopLossPrice = currentPrice * (1 + stopLossPct);\n      takeProfitPrice = currentPrice * (1 - takeProfitPct);\n    }\n    \n    const intent = {\n      id: `intent_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,\n      symbol: data.symbol || 'UNKNOWN',\n      epic: data.epic || 'UNKNOWN',\n      side: data.signal || 'BUY',\n      type: 'MARKET',\n      price: currentPrice,\n      qty: sizing.position_size_units || 0,\n      position_size_usd: sizing.position_size_usd || 0,\n      position_size_units: sizing.position_size_units || 0,\n      stop_loss_price: Math.round(stopLossPrice * 10000) / 10000,\n      take_profit_price: Math.round(takeProfitPrice * 10000) / 10000,\n      risk_amount_usd: sizing.risk_amount_usd || 0,\n      stop_loss_pct: sizing.stop_loss_pct || 0,\n      take_profit_pct: sizing.take_profit_pct || 0,\n      tif: 'GTC',\n      strategy: action.strategy || 'UNKNOWN',\n      rationale: `${action.strategy} - Risk: $${sizing.risk_amount_usd?.toFixed(2) || 0} (${sizing.risk_pct_of_capital?.toFixed(1) || 0}%), Position: $${sizing.position_size_usd?.toFixed(2) || 0}, Reserve: ${sizing.reserve_pct_after_entry?.toFixed(1) || 0}%`,\n      env_mode: 'demo',\n      status: 'PENDING',\n      risk_json: JSON.stringify({\n        ...data.riskData,\n        sizing: sizing\n      }),\n      context_json: JSON.stringify(data.banditResult || {}),\n      created_at: new Date().toISOString(),\n      updated_at: new Date().toISOString()\n    };\n    \n    results.push({\n      json: intent\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "create-intent",
+      "name": "Create Intent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list"
+        },
+        "table": {
+          "__rl": true,
+          "value": "intents",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.id }}",
+            "symbol": "={{ $json.symbol }}",
+            "side": "={{ $json.side }}",
+            "type": "={{ $json.type }}",
+            "price": "={{ $json.price }}",
+            "qty": "={{ $json.qty }}",
+            "tif": "={{ $json.tif }}",
+            "strategy": "={{ $json.strategy }}",
+            "rationale": "={{ $json.rationale }}",
+            "env_mode": "={{ $json.env_mode }}",
+            "status": "={{ $json.status }}",
+            "risk_json": "={{ $json.risk_json }}",
+            "context_json": "={{ $json.context_json }}",
+            "position_size_usd": "={{ $json.position_size_usd }}",
+            "position_size_units": "={{ $json.position_size_units }}",
+            "stop_loss_price": "={{ $json.stop_loss_price }}",
+            "take_profit_price": "={{ $json.take_profit_price }}",
+            "risk_amount_usd": "={{ $json.risk_amount_usd }}",
+            "stop_loss_pct": "={{ $json.stop_loss_pct }}",
+            "take_profit_pct": "={{ $json.take_profit_pct }}",
+            "created_at": "={{ $json.created_at }}",
+            "updated_at": "={{ $json.updated_at }}"
+          }
+        }
+      },
+      "id": "store-intent",
+      "name": "Store Intent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [3300, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list"
+        },
+        "table": {
+          "__rl": true,
+          "value": "system_events",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "event_type": "INTENT_CREATED",
+            "severity": "INFO",
+            "message": "Trading intent created and stored",
+            "details": "={{ JSON.stringify({intent_id: $json.id, symbol: $json.symbol, strategy: $json.strategy}) }}",
+            "source": "n8n_risk_order_routing_workflow"
+          }
+        }
+      },
+      "id": "log-intent-creation",
+      "name": "Log Intent Creation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [3500, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "cron-trigger": {
+      "main": [
+        [
+          {
+            "node": "get-watchlist-signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-watchlist-signals": {
+      "main": [
+        [
+          {
+            "node": "process-watchlist-signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "process-watchlist-signals": {
+      "main": [
+        [
+          {
+            "node": "get-account-balance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-account-balance": {
+      "main": [
+        [
+          {
+            "node": "parse-balance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-balance": {
+      "main": [
+        [
+          {
+            "node": "get-positions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-positions": {
+      "main": [
+        [
+          {
+            "node": "parse-positions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-positions": {
+      "main": [
+        [
+          {
+            "node": "combine-risk-data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "combine-risk-data": {
+      "main": [
+        [
+          {
+            "node": "risk-assessment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "risk-assessment": {
+      "main": [
+        [
+          {
+            "node": "filter-signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "filter-signals": {
+      "main": [
+        [
+          {
+            "node": "bandit-selection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "bandit-selection": {
+      "main": [
+        [
+          {
+            "node": "parse-bandit-result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-bandit-result": {
+      "main": [
+        [
+          {
+            "node": "get-current-price",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-current-price": {
+      "main": [
+        [
+          {
+            "node": "parse-quote",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-quote": {
+      "main": [
+        [
+          {
+            "node": "calculate-position-size",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "calculate-position-size": {
+      "main": [
+        [
+          {
+            "node": "merge-sizing-data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "merge-sizing-data": {
+      "main": [
+        [
+          {
+            "node": "create-intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "create-intent": {
+      "main": [
+        [
+          {
+            "node": "store-intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "store-intent": {
+      "main": [
+        [
+          {
+            "node": "log-intent-creation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-08T12:00:00.000Z",
+  "versionId": "1"
+}

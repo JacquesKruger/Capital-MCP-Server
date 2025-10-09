@@ -1,0 +1,57 @@
+# Trading Watchlist
+# Instruments to monitor and trade
+# Priority: higher = fetched first
+# Tags: for grouping and filtering
+
+instruments:
+  - symbol: BTCUSD
+    epic: BTCUSD
+    name: Bitcoin/USD
+    enabled: true
+    priority: 100
+    tags: [crypto, volatile, largecap]
+    
+  - symbol: EURUSD
+    epic: EURUSD
+    name: EUR/USD
+    enabled: true
+    priority: 90
+    tags: [forex, major, liquid]
+    
+  - symbol: GBPUSD
+    epic: GBPUSD
+    name: GBP/USD
+    enabled: true
+    priority: 80
+    tags: [forex, major, liquid]
+    
+  - symbol: GOLD
+    epic: GOLD
+    name: Gold
+    enabled: true
+    priority: 70
+    tags: [commodity, metals, safe-haven]
+    
+  - symbol: US500
+    epic: US500
+    name: S&P 500
+    enabled: true
+    priority: 60
+    tags: [index, largecap, us]
+
+# Additional instruments (disabled by default)
+additional:
+  - symbol: EURGBP
+    epic: EURGBP
+    enabled: false
+    tags: [forex, cross]
+    
+  - symbol: USDJPY
+    epic: USDJPY
+    enabled: false
+    tags: [forex, major]
+    
+  - symbol: ETHUSD
+    epic: ETHUSD
+    enabled: false
+    tags: [crypto, volatile]

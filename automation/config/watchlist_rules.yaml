@@ -1,0 +1,103 @@
+# =============================================================================
+# DYNAMIC WATCHLIST RULES
+# =============================================================================
+# Configuration for the daily screener that ranks symbols for trading.
+# Rules are applied per asset class with different thresholds and weights.
+
+# Timezone for market open calculations
+timezone: Africa/Windhoek
+
+# Asset class configurations
+classes:
+  stocks:
+    min_liquidity_score: 0.60
+    max_spread_bps: 12
+    atr_pct_min: 0.008       # 0.8% minimum ATR
+    gap_abs_min_pct: 0.5     # 0.5% minimum gap to qualify
+    weights:
+      atr_pct: 0.35          # Volatility weight
+      gap: 0.25              # Gap weight
+      compression: 0.15      # Price compression weight
+      liquidity: 0.15        # Liquidity weight
+      sentiment: 0.10        # News sentiment weight
+    top_n: 12                # Top 12 stocks per day
+  
+  forex:
+    min_liquidity_score: 0.80
+    max_spread_bps: 3
+    atr_pct_min: 0.003       # 0.3% minimum ATR
+    gap_abs_min_pct: 0.00    # No gap requirement for 24h markets
+    weights:
+      atr_pct: 0.45
+      compression: 0.25
+      liquidity: 0.20
+      sentiment: 0.10
+    top_n: 10
+  
+  crypto:
+    min_liquidity_score: 0.50
+    max_spread_bps: 25
+    atr_pct_min: 0.012       # 1.2% minimum ATR
+    gap_abs_min_pct: 0.00
+    weights:
+      atr_pct: 0.40
+      compression: 0.25
+      liquidity: 0.20
+      sentiment: 0.15
+    top_n: 10
+  
+  metals:
+    min_liquidity_score: 0.70
+    max_spread_bps: 8
+    atr_pct_min: 0.005       # 0.5% minimum ATR
+    gap_abs_min_pct: 0.00
+    weights:
+      atr_pct: 0.40
+      compression: 0.25
+      liquidity: 0.20
+      sentiment: 0.15
+    top_n: 8
+  
+  indices:
+    min_liquidity_score: 0.75
+    max_spread_bps: 5
+    atr_pct_min: 0.004       # 0.4% minimum ATR
+    gap_abs_min_pct: 0.30
+    weights:
+      atr_pct: 0.35
+      gap: 0.20
+      compression: 0.20
+      liquidity: 0.15
+      sentiment: 0.10
+    top_n: 10
+
+# Scoring configuration
+scoring:
+  compression_lookback: 20     # Bars to look back for range compression
+  liquidity_lookback_days: 10  # Days to average liquidity metrics
+  gap_lookback_bars: 1         # Bars to calculate overnight gap
+  normalize_method: minmax_clip # minmax_clip|zscore_clip
+
+# Sentiment integration
+sentiment:
+  enabled: true
+  decay_hours: 12              # Hours for sentiment score decay
+  sources:
+    - news                     # Use news table
+    - research_notes           # Use research_notes table
+
+# Filters
+filters:
+  exclude_symbols: []          # Symbols to never include
+  require_min_candles: 50      # Minimum historical candles required
+  exclude_no_recent_data: true # Skip symbols with no data in last 48h
+  min_avg_volume: 0            # Minimum average volume (0 = no filter)
+
+# Output configuration
+output:
+  format: json
+  include_metrics: true
+  include_reasons: true
+  telegram_notification: true
+  telegram_format: markdown    # markdown|html
+

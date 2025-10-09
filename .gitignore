@@ -74,5 +74,30 @@ data/
 *.sqlite
 *.sqlite3
 
+# Automation Stack
+automation/.env
+automation/.env.*
+!automation/.env.example
+automation/logs/
+automation/*.log
+
+# Docker volumes (if externalized)
+automation/pgdata/
+automation/n8n_data/
+
+# Backups
+automation/backups/
+*.sql.gpg
+backup_*.sql
+backup_*.tar.gz
+*.backup
+
+# Session data & runtime
+automation/n8n_data/
+automation/pgdata/
+automation/**/*.db-journal
+automation/**/*.db-shm
+automation/**/*.db-wal
+
 
 

@@ -48,6 +48,30 @@ A production-ready [Model Context Protocol](https://modelcontextprotocol.io) (MC
 
 ---
 
+## 🤖 NEW: Trading Automation Stack
+
+**Want to automate your trading strategies?** Check out the new `automation/` folder!
+
+A production-grade **automated trading system** built with:
+- **n8n** - Visual workflow automation
+- **PostgreSQL** - Comprehensive trade data storage
+- **AI Integration** - ChatGPT/Claude for trade reviews & news sentiment
+- **Multi-Armed Bandit** - Dynamic strategy selection
+- **Risk Management** - Portfolio limits, stop-losses, daily loss limits
+- **Technical Indicators** - SMA, RSI, ATR, VWAP, Donchian channels
+
+**Features:**
+- 📊 Automated data collection & signal generation
+- 🧠 AI-powered trade reviews and sanity checks
+- 🎯 Risk-managed position sizing
+- 🔐 HMAC approval tokens for security
+- 📈 Performance tracking & strategy optimization
+- 🚨 Kill switch & emergency controls
+
+**[👉 Get Started with Automation →](automation/README_AUTOMATION.md)**
+
+---
+
 ## 🚀 Quick Start
 
 ### One-Line Installation

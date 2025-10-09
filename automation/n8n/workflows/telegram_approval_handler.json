@@ -1,0 +1,754 @@
+{
+  "name": "Telegram Approval Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "value": "*/1 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT value FROM bot_state WHERE key = 'telegram_update_offset' LIMIT 1"
+      },
+      "id": "get-offset",
+      "name": "Get Offset",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [300, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all();\nlet offset = 0;\nif (rows.length && rows[0].json.value !== undefined && rows[0].json.value !== null) {\n  const parsed = Number(rows[0].json.value);\n  if (!Number.isNaN(parsed)) {\n    offset = parsed;\n  }\n}\nreturn [{ json: { offset } }];"
+      },
+      "id": "ensure-offset",
+      "name": "Ensure Offset",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/getUpdates' }}",
+        "method": "GET",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "timeout", "value": "0" },
+            { "name": "limit", "value": "20" },
+            { "name": "offset", "value": "={{ $('Ensure Offset').item.json.offset }}" }
+          ]
+        }
+      },
+      "id": "fetch-updates",
+      "name": "Fetch Updates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const currentOffset = $('Ensure Offset').item.json.offset ?? 0;\nconst response = $input.first()?.json ?? {};\nconst updates = Array.isArray(response.result) ? response.result : [];\nconst allowedUsers = (process.env.TELEGRAM_ALLOWED_USERNAMES || '')\n  .split(',')\n  .map(u => u.trim())\n  .filter(Boolean);\nlet nextOffset = currentOffset;\nconst actions = [];\n\nfor (const update of updates) {\n  const updateId = update.update_id ?? currentOffset;\n  if (updateId >= nextOffset) {\n    nextOffset = updateId + 1;\n  }\n\n  const callback = update.callback_query;\n  if (!callback) {\n    continue;\n  }\n\n  const callbackData = callback.data || '';\n  if (!callbackData.startsWith('APPROVE:') && !callbackData.startsWith('REJECT:')) {\n    continue;\n  }\n\n  const [action, intentId] = callbackData.split(':', 2);\n  if (!intentId) {\n    continue;\n  }\n\n  const username = callback.from?.username ?? callback.from?.first_name ?? callback.from?.id?.toString() ?? 'unknown';\n  const isAllowed = !allowedUsers.length || allowedUsers.includes(callback.from?.username || '');\n  if (!isAllowed) {\n    continue;\n  }\n\n  actions.push({\n    intent_id: intentId,\n    action,\n    chat_id: callback.message?.chat?.id ?? null,\n    message_id: callback.message?.message_id ?? null,\n    username,\n    update_id: updateId,\n    timestamp: new Date().toISOString()\n  });\n}\n\nreturn [{ json: { next_offset: nextOffset, actions } }];"
+      },
+      "id": "process-updates",
+      "name": "Process Updates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ \"INSERT INTO bot_state (key, value, updated_at) VALUES ('telegram_update_offset','\" + $json.next_offset + \"',NOW()) ON CONFLICT (key) DO UPDATE SET value='\" + $json.next_offset + \"', updated_at=NOW()\" }}"
+      },
+      "id": "store-offset",
+      "name": "Store Offset",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1100, 160],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const actions = Array.isArray($json.actions) ? $json.actions : [];\nif (!actions.length) {\n  return [{ json: { action: 'NO_ACTION' } }];\n}\nreturn actions.map(action => ({ json: action }));"
+      },
+      "id": "extract-actions",
+      "name": "Extract Actions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 420]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.intent_id }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "has-intent",
+      "name": "Has Intent?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1300, 420]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            { "name": "action", "value": "NO_ACTION" },
+            { "name": "status", "value": "NONE" },
+            { "name": "message", "value": "No actionable Telegram callbacks" }
+          ]
+        }
+      },
+      "id": "no-action",
+      "name": "No Action",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [1500, 600]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT '{{ $json.intent_id }}'::text AS req_intent_id, '{{ $json.action }}'::text AS req_action, '{{ $json.chat_id }}'::text AS req_chat_id, '{{ $json.message_id }}'::text AS req_message_id, '{{ $json.username }}'::text AS req_username, intents.* FROM intents WHERE id = '{{ $json.intent_id }}' AND status = 'PENDING'"
+      },
+      "id": "get-intent",
+      "name": "Get Intent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1500, 360],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = [];\nfor (const item of $input.all()) {\n  const data = item.json;\n  if (!data.req_intent_id || !data.id) {\n    continue;\n  }\n  const qty = Number(data.qty) || 1;\n  const clean = (value) => (value ?? '').toString().replace(/'/g, \"''\");\n  results.push({\n    json: {\n      intent_id: data.id,\n      symbol: data.symbol,\n      side: data.side,\n      type: data.type,\n      price: data.price,\n      qty,\n      position_size_units: data.position_size_units,\n      stop_loss_price: data.stop_loss_price,\n      take_profit_price: data.take_profit_price,\n      strategy: data.strategy,\n      rationale: data.rationale,\n      env_mode: data.env_mode,\n      action: data.req_action,\n      chat_id: data.req_chat_id,\n      message_id: data.req_message_id,\n      username: data.req_username,\n      username_safe: clean(data.req_username),\n      intent_id_safe: clean(data.id),\n      timestamp: new Date().toISOString(),\n      should_execute: data.req_action === 'APPROVE'\n    }\n  });\n}\nif (!results.length) {\n  results.push({ json: { action: 'NO_ACTION' } });\n}\nreturn results;"
+      },
+      "id": "process-intent",
+      "name": "Process Intent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1700, 360]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.action }}",
+              "operation": "equal",
+              "value2": "APPROVE"
+            }
+          ]
+        }
+      },
+      "id": "is-approved",
+      "name": "Is Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1900, 360]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate a simple token using timestamp and random value\nconst results = [];\nfor (const item of $input.all()) {\n  const data = item.json;\n  if (!data.intent_id) {\n    continue;\n  }\n  // Simple token: base64 encode of intent_id + timestamp + random\n  const payload = `${data.intent_id}:${data.username}:${data.timestamp}:${Math.random()}`;\n  const token = Buffer.from(payload).toString('base64');\n  \n  // Use position_size_units if available, otherwise fall back to qty\n  const qty = Number(data.position_size_units || data.qty) || 1;\n  \n  // Extract stop-loss and take-profit\n  const stopLoss = data.stop_loss_price ? data.stop_loss_price.toString() : '';\n  const takeProfit = data.take_profit_price ? data.take_profit_price.toString() : '';\n  \n  results.push({\n    json: {\n      ...data,\n      approval_token: token,\n      token_preview: token.slice(0, 16),\n      size_str: qty.toString(),\n      stop_loss: stopLoss,\n      take_profit: takeProfit,\n      confirm_live_trade: data.env_mode === 'live' ? 'yes' : 'no'\n    }\n  });\n}\nreturn results;"
+      },
+      "id": "generate-approval-token",
+      "name": "Generate Approval Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2100, 240]
+    },
+    {
+      "parameters": {
+        "url": "http://mcp-caller:8000/mcp/place_market_order",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { epic: $json.symbol, direction: $json.side, size: $json.size_str, stop_loss: $json.stop_loss, take_profit: $json.take_profit, env_mode: $json.env_mode, approval_token: $json.approval_token, confirm_live_trade: $json.confirm_live_trade } }}"
+      },
+      "id": "place-order",
+      "name": "Place Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2300, 240]
+    },
+    {
+      "parameters": {
+        "jsCode": "const responses = $input.all();\nconst source = $('Generate Approval Token').all();\nconst results = [];\nfor (let i = 0; i < source.length; i++) {\n  results.push({\n    json: {\n      ...source[i]?.json,\n      place_order_response: responses[i]?.json ?? null\n    }\n  });\n}\nreturn results;"
+      },
+      "id": "merge-order-response",
+      "name": "Merge Order Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2500, 240]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE intents SET status = 'APPROVED', updated_at = NOW() WHERE id = '{{ $json.intent_id }}'"
+      },
+      "id": "update-intent-approved",
+      "name": "Update Intent Approved",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2700, 240],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return $items('Merge Order Response');"
+      },
+      "id": "approved-context",
+      "name": "Approved Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2900, 240]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ 'INSERT INTO approvals (intent_id, approver, source, token_preview, env_mode, approved_at) VALUES (\\'' + $json.intent_id.replace(/'/g, \"''\") + '\\',\\'' + ($json.username || '').replace(/'/g, \"''\") + '\\',\\'telegram\\',\\'' + ($json.token_preview || '').replace(/'/g, \"''\") + '\\',\\'' + $json.env_mode + '\\',NOW())' }}"
+      },
+      "id": "store-approval",
+      "name": "Store Approval",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [3100, 240],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return $items('Merge Order Response');"
+      },
+      "id": "approved-context-2",
+      "name": "Approved Context 2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3300, 240]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { chat_id: $json.chat_id, text: '✅ Trade approved and order submitted!\\n\\nIntent: ' + $json.intent_id + '\\nSymbol: ' + $json.symbol + '\\nSide: ' + $json.side + '\\nStrategy: ' + $json.strategy } }}"
+      },
+      "id": "send-confirmation",
+      "name": "Send Confirmation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3500, 240]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $items('Merge Order Response');"
+      },
+      "id": "approved-context-3",
+      "name": "Approved Context 3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3700, 240]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ 'INSERT INTO system_events (event_type, severity, message, details, source) VALUES (\\'TELEGRAM_APPROVAL\\',\\'INFO\\',\\'Telegram approval processed\\',\\'' + JSON.stringify({ intent_id: $json.intent_id, symbol: $json.symbol, action: 'APPROVED', username: $json.username, order_response: $json.place_order_response }).replace(/'/g, \"''\") + '\\',\\'n8n_telegram_approval_handler_workflow\\')' }}"
+      },
+      "id": "log-approval",
+      "name": "Log Approval",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [3900, 240],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            { "name": "intent_id", "value": "={{ $json.intent_id }}" },
+            { "name": "action", "value": "APPROVE" },
+            { "name": "status", "value": "APPROVED" },
+            { "name": "message", "value": "Trade approved and order placed" },
+            { "name": "order_response", "value": "={{ JSON.stringify($json.place_order_response) }}" }
+          ]
+        }
+      },
+      "id": "prepare-approve-response",
+      "name": "Prepare Approve Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [4100, 240]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE intents SET status = 'REJECTED', updated_at = NOW() WHERE id = '{{ $json.intent_id }}'"
+      },
+      "id": "update-intent-rejected",
+      "name": "Update Intent Rejected",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2100, 500],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return $items('Process Intent');"
+      },
+      "id": "rejected-context",
+      "name": "Rejected Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2300, 500]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { chat_id: $json.chat_id, text: '❌ Trade rejected. No order placed.\\n\\nIntent: ' + ($json.intent_id || 'n/a') + '\\nAction taken by: ' + ($json.username || 'unknown') } }}"
+      },
+      "id": "send-rejection",
+      "name": "Send Rejection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2500, 500]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ 'INSERT INTO system_events (event_type, severity, message, details, source) VALUES (\\'TELEGRAM_APPROVAL\\',\\'INFO\\',\\'Telegram rejection processed\\',\\'' + JSON.stringify({ intent_id: $json.intent_id, action: 'REJECTED', username: $json.username }).replace(/'/g, \"''\") + '\\',\\'n8n_telegram_approval_handler_workflow\\')' }}"
+      },
+      "id": "log-rejection",
+      "name": "Log Rejection",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2700, 500],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Trading Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            { "name": "intent_id", "value": "={{ $json.intent_id }}" },
+            { "name": "action", "value": "REJECT" },
+            { "name": "status", "value": "REJECTED" },
+            { "name": "message", "value": "Trade rejected" }
+          ]
+        }
+      },
+      "id": "prepare-reject-response",
+      "name": "Prepare Reject Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [2900, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all();"
+      },
+      "id": "finalize-output",
+      "name": "Finalize Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4400, 360]
+    }
+  ],
+  "connections": {
+    "Cron Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Offset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Offset": {
+      "main": [
+        [
+          {
+            "node": "Ensure Offset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ensure Offset": {
+      "main": [
+        [
+          {
+            "node": "Fetch Updates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Updates": {
+      "main": [
+        [
+          {
+            "node": "Process Updates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Updates": {
+      "main": [
+        [
+          {
+            "node": "Store Offset",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract Actions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Actions": {
+      "main": [
+        [
+          {
+            "node": "Has Intent?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Intent?": {
+      "main": [
+        [
+          {
+            "node": "Get Intent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Action": {
+      "main": [
+        [
+          {
+            "node": "Finalize Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Intent": {
+      "main": [
+        [
+          {
+            "node": "Process Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Intent": {
+      "main": [
+        [
+          {
+            "node": "Is Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Approved?": {
+      "main": [
+        [
+          {
+            "node": "Generate Approval Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Intent Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Approval Token": {
+      "main": [
+        [
+          {
+            "node": "Place Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Place Order": {
+      "main": [
+        [
+          {
+            "node": "Merge Order Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Order Response": {
+      "main": [
+        [
+          {
+            "node": "Update Intent Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Intent Approved": {
+      "main": [
+        [
+          {
+            "node": "Approved Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved Context": {
+      "main": [
+        [
+          {
+            "node": "Store Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Approval": {
+      "main": [
+        [
+          {
+            "node": "Approved Context 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved Context 2": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Approved Context 3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved Context 3": {
+      "main": [
+        [
+          {
+            "node": "Log Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Approval": {
+      "main": [
+        [
+          {
+            "node": "Prepare Approve Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Approve Response": {
+      "main": [
+        [
+          {
+            "node": "Finalize Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Intent Rejected": {
+      "main": [
+        [
+          {
+            "node": "Rejected Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rejected Context": {
+      "main": [
+        [
+          {
+            "node": "Send Rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Rejection": {
+      "main": [
+        [
+          {
+            "node": "Log Rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Rejection": {
+      "main": [
+        [
+          {
+            "node": "Prepare Reject Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Reject Response": {
+      "main": [
+        [
+          {
+            "node": "Finalize Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

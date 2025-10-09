@@ -1,0 +1,117 @@
+# Strategy Configuration
+# Parameters for each trading strategy
+
+strategies:
+  ORB_VWAP:
+    enabled: true
+    description: "Opening Range Breakout combined with VWAP"
+    
+    parameters:
+      opening_range_minutes: 30
+      min_vwap_distance: 0.001  # Minimum distance from VWAP (1 pip)
+      use_sma_filter: true
+      sma_period: 20
+    
+    entry:
+      buy_condition: "price > vwap AND price > sma_20"
+      sell_condition: "price < vwap AND price < sma_20"
+    
+    stops:
+      tight:
+        stop_loss_atr_mult: 1.5
+        take_profit_atr_mult: 2.5
+      base:
+        stop_loss_atr_mult: 2.0
+        take_profit_atr_mult: 3.0
+      wide:
+        stop_loss_atr_mult: 3.0
+        take_profit_atr_mult: 5.0
+    
+    sizing:
+      base_risk_pct: 1.0  # 1% of account per trade
+      max_size_mult: 2.0   # Maximum 2x base size
+      min_size_mult: 0.5   # Minimum 0.5x base size
+
+  SMA_RSI_ATR:
+    enabled: true
+    description: "Trend following with RSI filter and ATR stops"
+    
+    parameters:
+      sma_fast: 20
+      sma_slow: 50
+      rsi_period: 14
+      rsi_overbought: 70
+      rsi_oversold: 30
+      atr_period: 14
+    
+    entry:
+      buy_condition: "price > sma_20 AND sma_20 > sma_50 AND rsi < 70"
+      sell_condition: "price < sma_20 AND sma_20 < sma_50 AND rsi > 30"
+      min_trend_strength: 0.002  # Minimum gap between SMAs
+    
+    stops:
+      tight:
+        stop_loss_atr_mult: 1.5
+        take_profit_atr_mult: 2.0
+      base:
+        stop_loss_atr_mult: 2.0
+        take_profit_atr_mult: 3.0
+      wide:
+        stop_loss_atr_mult: 2.5
+        take_profit_atr_mult: 4.0
+    
+    sizing:
+      base_risk_pct: 1.0
+      max_size_mult: 2.0
+      min_size_mult: 0.5
+
+  DONCHIAN_BREAKOUT:
+    enabled: true
+    description: "Donchian channel breakout system"
+    
+    parameters:
+      period: 20
+      min_channel_width: 0.005  # Minimum channel width (0.5%)
+    
+    entry:
+      buy_condition: "price >= donchian_upper"
+      sell_condition: "price <= donchian_lower"
+    
+    stops:
+      tight:
+        stop_loss_pct: 0.015  # 1.5%
+        take_profit_pct: 0.030  # 3.0%
+      base:
+        stop_loss_pct: 0.020  # 2.0%
+        take_profit_pct: 0.040  # 4.0%
+      wide:
+        stop_loss_pct: 0.030  # 3.0%
+        take_profit_pct: 0.060  # 6.0%
+    
+    sizing:
+      base_risk_pct: 1.0
+      max_size_mult: 2.0
+      min_size_mult: 0.5
+
+# Global stop settings
+stops:
+  use_trailing_stop: true
+  trailing_stop_activation: 1.5  # Activate after 1.5x initial risk profit
+  trailing_stop_distance_atr: 1.5
+  
+  max_hold_time_hours: 48
+  weekend_close: true  # Close positions before weekend
+
+# Position sizing
+sizing:
+  method: "fixed_risk"  # fixed_risk, fixed_size, kelly
+  account_risk_per_trade: 1.0  # 1% default
+  
+  # Per-symbol overrides
+  symbol_overrides:
+    BTCUSD:
+      max_risk_pct: 2.0
+    GOLD:
+      max_risk_pct: 1.5
+    EURUSD:
+      max_risk_pct: 1.0
